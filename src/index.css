@@ -1,0 +1,138 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+html, body, #root {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  @apply text-slate-800 bg-gray-50;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+button, input, optgroup, select, textarea, .leaflet-container {
+  font-family: inherit;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator {
+  @apply opacity-50 hover:opacity-100 cursor-pointer;
+}
+
+/* Custom scrollbar for mobile feel */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-gray-200 rounded-full hover:bg-gray-300;
+}
+
+.custom-svg-marker {
+  background: none !important;
+  border: none !important;
+}
+
+/* Ensure Leaflet container and tiles render cleanly */
+.leaflet-container {
+  width: 100% !important;
+  height: 100% !important;
+  z-index: 10 !important;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+  outline: none;
+}
+
+.leaflet-popup-content-wrapper {
+  border-radius: 1rem !important;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.12), 0 8px 10px -6px rgba(0, 0, 0, 0.08) !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  border: 1px solid #e2e8f0 !important;
+}
+
+.leaflet-popup-content {
+  margin: 12px 14px !important;
+  line-height: 1.4 !important;
+  font-family: 'Inter', sans-serif !important;
+}
+
+.leaflet-container img {
+  max-width: none !important;
+  max-height: none !important;
+}
+
+.leaflet-pane {
+  z-index: 10 !important;
+}
+
+.leaflet-top,
+.leaflet-bottom {
+  z-index: 20 !important;
+}
+
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #print-area, #print-area * {
+    visibility: visible;
+  }
+  #print-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
+
+@keyframes marquee-ltr {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.animate-marquee-ltr {
+  display: inline-block;
+  white-space: nowrap;
+  animation: marquee-ltr 4s linear infinite;
+}
+
+@keyframes scroll-text {
+  0%, 10% { transform: translateX(0); }
+  40%, 60% { transform: translateX(calc(-100% + 100%)); }
+  90%, 100% { transform: translateX(0); }
+}
+
+.nav-text-container {
+  width: 100%;
+  overflow: hidden;
+  display: flex;
+  justify-content: center;
+}
+
+.nav-text-scroll {
+  display: inline-block;
+  white-space: nowrap;
+}
+
+.nav-text-container:hover .nav-text-scroll,
+.nav-text-scroll.is-long {
+  animation: marquee-ltr 4s linear infinite;
+}
+

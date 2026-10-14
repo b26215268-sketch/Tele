@@ -1,0 +1,137 @@
+{
+  "entities": {
+    "AppUser": {
+      "title": "Người dùng",
+      "description": "Tài khoản người dùng trong hệ thống (Staff, Manager, Admin)",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string", "description": "ID role (staff, manager, admin)" },
+        "permissions": { "type": "array", "items": { "type": "string" } },
+        "department": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["email", "role"]
+    },
+    "AppRole": {
+      "title": "Vai trò",
+      "description": "Phân quyền vai trò",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "permissions": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["name", "permissions"]
+    },
+    "Campaign": {
+      "title": "Đợt công việc",
+      "description": "Dự án / Đợt công việc",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "startDate": { "type": "string" },
+        "endDate": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "closed"] },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["name", "status"]
+    },
+    "Station": {
+      "title": "Trạm / Site",
+      "description": "Thông tin hạ tầng trạm",
+      "type": "object",
+      "properties": {
+        "campaignId": { "type": "string" },
+        "infrastructureCode": { "type": "string" },
+        "name": { "type": "string" },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "address": { "type": "string" },
+        "status": { "type": "string" },
+        "region": { "type": "string" }
+      },
+      "required": ["name", "latitude", "longitude"]
+    },
+    "TaskGroup": {
+      "title": "Nhóm Công việc",
+      "description": "Cấu hình module yêu cầu cho form",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "modules": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["name"]
+    },
+    "Assignment": {
+      "title": "Giao việc & Tiến độ",
+      "description": "Manager giao việc cho Staff, tracker tiến độ",
+      "type": "object",
+      "properties": {
+        "assigneeId": { "type": "string", "description": "Người được giao" },
+        "assignedBy": { "type": "string", "description": "Người giao" },
+        "stationId": { "type": "string" },
+        "campaignId": { "type": "string" },
+        "taskGroupId": { "type": "string" },
+        "startDate": { "type": "string" },
+        "deadline": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "checked_in", "completed"] },
+        "checkInLocation": { 
+          "type": "object", 
+          "properties": {
+            "latitude": { "type": "number" },
+            "longitude": { "type": "number" }
+          }
+        },
+        "checkInTime": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["assigneeId", "assignedBy", "stationId", "taskGroupId", "startDate", "deadline", "status"]
+    },
+    "Report": {
+      "title": "Báo cáo Thực địa",
+      "description": "Báo cáo cuối cùng sau khi làm",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "stationId": { "type": "string" },
+        "assignmentId": { "type": "string" },
+        "date": { "type": "string" },
+        "content": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "completed"] }
+      },
+      "required": ["userId", "stationId", "date", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "AppUser",
+      "description": "Tài khoản nhân sự"
+    },
+    "/roles/{roleId}": {
+      "schema": "AppRole",
+      "description": "Quyền của role"
+    },
+    "/campaigns/{campaignId}": {
+      "schema": "Campaign",
+      "description": "Đợt dự án"
+    },
+    "/stations/{stationId}": {
+      "schema": "Station",
+      "description": "Quản lý trạm"
+    },
+    "/taskGroups/{taskGroupId}": {
+      "schema": "TaskGroup",
+      "description": "Cấu hình form/nhiệm vụ"
+    },
+    "/assignments/{assignmentId}": {
+      "schema": "Assignment",
+      "description": "Danh sách giao việc"
+    },
+    "/reports/{reportId}": {
+      "schema": "Report",
+      "description": "Báo cáo trạm"
+    }
+  }
+}

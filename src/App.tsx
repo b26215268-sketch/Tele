@@ -527,35 +527,6 @@ export default function App() {
     }
   };
 
-  const activateSelfAsAdmin = async () => {
-    try {
-      const targetUid = activeUser?.uid || auth.currentUser?.uid || 'admin_b26215268';
-      const targetEmail = activeUser?.email || 'b26215268@gmail.com';
-      const updatedUser: AppUser = {
-        id: targetUid,
-        email: targetEmail,
-        displayName: activeUser?.displayName || 'Kỹ sư Mạnh (Admin)',
-        role: 'admin',
-        status: 'active',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-      
-      try {
-        const userRef = doc(db, 'users', targetUid);
-        await setDoc(userRef, updatedUser, { merge: true });
-      } catch (e: any) {
-        console.warn("Self-activate Firestore update warning:", e);
-      }
-
-      setCurrentAppUser(updatedUser);
-      setFastUser(updatedUser);
-      localStorage.setItem('telecom_fast_login', JSON.stringify(updatedUser));
-    } catch (e: any) {
-      console.warn("Self-activate error:", e);
-    }
-  };
-
   const logout = () => {
     localStorage.removeItem('telecom_fast_login');
     setFastUser(null);
@@ -957,9 +928,9 @@ export default function App() {
           <span className="inline-block text-xs font-bold uppercase tracking-wider px-3 py-1 bg-amber-100 text-amber-800 rounded-full mb-3">
             Chờ Quản trị viên kích hoạt
           </span>
-          <h2 className="text-2xl font-bold text-gray-900 mb-2">Tài khoản chưa được kích hoạt</h2>
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">Yêu cầu đã được gửi</h2>
           <p className="text-sm text-gray-600 mb-6 leading-relaxed">
-            Xin chào <strong className="text-gray-900">{activeUser.displayName || activeUser.email}</strong>! Bạn đã đăng nhập thành công. Tài khoản này đang chờ được phân quyền. Bạn có thể kích hoạt trực tiếp bằng nút bên dưới:
+            Xin chào <strong className="text-gray-900">{activeUser.displayName || activeUser.email}</strong>! Bạn đã đăng nhập thành công. Tài khoản của bạn đang ở hàng đợi và chờ Quản trị viên xét duyệt & phân vai trò trước khi truy cập.
           </p>
 
           <div className="bg-gray-50 rounded-2xl p-4 text-left text-xs space-y-2 border border-gray-100 mb-6">
@@ -968,24 +939,18 @@ export default function App() {
               <span className="font-semibold text-gray-800">{activeUser.email}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-500">Mã người dùng:</span>
-              <span className="font-mono text-gray-600 truncate max-w-[200px]">{activeUser.uid}</span>
-            </div>
-            <div className="flex justify-between">
               <span className="text-gray-500">Trạng thái:</span>
               <span className="font-bold text-amber-600 flex items-center gap-1">
                 <Clock className="w-3.5 h-3.5" /> Chờ phê duyệt (Pending)
               </span>
             </div>
+            <div className="flex justify-between pt-1 border-t border-gray-200">
+              <span className="text-gray-500">Quản trị viên duyệt:</span>
+              <span className="font-medium text-blue-700">b26215268@gmail.com</span>
+            </div>
           </div>
 
           <div className="space-y-3">
-            <Button 
-              onClick={activateSelfAsAdmin}
-              className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold flex items-center justify-center gap-2 cursor-pointer shadow-sm"
-            >
-              <Zap className="w-4 h-4 fill-white" /> Kích hoạt quyền Quản trị viên ngay (Tự kích hoạt)
-            </Button>
             <Button 
               onClick={async () => {
                 try {
@@ -994,31 +959,33 @@ export default function App() {
                     const uData = snap.data() as AppUser;
                     setCurrentAppUser(uData);
                     if (uData.status === 'active') {
-                      alert('Tài khoản đã được kích hoạt thành công!');
+                      alert('🎉 Tuyệt vời! Tài khoản của bạn đã được Quản trị viên kích hoạt. Đang chuyển vào hệ thống...');
+                    } else if (uData.status === 'blocked') {
+                      alert('Tài khoản này đã bị từ chối hoặc tạm khóa.');
                     } else {
-                      alert('Tài khoản vẫn đang ở trạng thái chờ duyệt. Vui lòng bấm nút kích hoạt ở trên.');
+                      alert('Tài khoản vẫn đang ở trạng thái chờ duyệt. Vui lòng liên hệ Quản trị viên (b26215268@gmail.com) để được duyệt nhanh!');
                     }
                   }
                 } catch (e: any) {
                   console.error(e);
                 }
               }} 
-              variant="outline"
-              className="w-full py-2.5 bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100"
+              className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold flex items-center justify-center gap-2 cursor-pointer shadow-sm rounded-xl"
             >
-              Kiểm tra trạng thái kích hoạt
+              <CheckCircle2 className="w-4 h-4 text-white" /> Kiểm tra lại trạng thái duyệt
             </Button>
+
             <Button 
-              variant="secondary" 
+              variant="outline" 
               onClick={logout} 
-              className="w-full py-2.5 text-gray-600 hover:text-gray-800"
+              className="w-full py-2.5 text-gray-600 hover:text-gray-800 border-gray-200 rounded-xl"
             >
               <LogOut className="w-4 h-4 mr-2" /> Đăng xuất tài khoản khác
             </Button>
           </div>
           
-          <p className="text-[11px] text-gray-400 mt-5">
-            Admin có thể phê duyệt và gán loại công việc cho bạn ngay trong mục "Quản trị hệ thống".
+          <p className="text-[11px] text-gray-400 mt-5 leading-relaxed">
+            💡 Quản trị viên sẽ thấy thông báo kích hoạt tài khoản của bạn ngay trong mục <strong>"Quản trị" → "Nhân sự & Phân quyền"</strong>.
           </p>
         </motion.div>
       </div>
@@ -1346,14 +1313,18 @@ export default function App() {
             />
           )}
           
-          {hasAdminAccess && (
-            <NavButton 
-              active={activeTab === 'admin'} 
-              onClick={() => setActiveTab('admin')} 
-              icon={<Database />} 
-              label="Quản trị" 
-            />
-          )}
+          {hasAdminAccess && (() => {
+            const pendingCount = (appUsers || []).filter(u => u.status === 'pending' && !isOwnerEmail(u.email)).length;
+            return (
+              <NavButton 
+                active={activeTab === 'admin'} 
+                onClick={() => setActiveTab('admin')} 
+                icon={<Database />} 
+                label="Quản trị" 
+                badge={pendingCount > 0 ? pendingCount : undefined}
+              />
+            );
+          })()}
         </div>
       </nav>
 
@@ -1362,12 +1333,12 @@ export default function App() {
   );
 }
 
-function NavButton({ active, onClick, icon, label }: any) {
+function NavButton({ active, onClick, icon, label, badge }: any) {
   return (
     <button 
       onClick={onClick}
       className={cn(
-        'flex flex-col items-center gap-1 pb-2 transition-all duration-300 w-12 sm:w-14 overflow-hidden group',
+        'flex flex-col items-center gap-1 pb-2 transition-all duration-300 w-12 sm:w-14 overflow-hidden group relative',
         active ? 'text-blue-600' : 'text-gray-500 hover:text-gray-900'
       )}
     >
@@ -1381,6 +1352,11 @@ function NavButton({ active, onClick, icon, label }: any) {
             active ? 'stroke-[2.5px]' : 'stroke-1 relative top-[1px]'
           ) 
         })}
+        {badge !== undefined && badge > 0 && (
+          <span className="absolute -top-1 -right-1.5 bg-rose-500 text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center shadow-xs animate-pulse">
+            {badge}
+          </span>
+        )}
       </div>
       <div className="nav-text-container w-full px-0.5">
         <span className={cn(

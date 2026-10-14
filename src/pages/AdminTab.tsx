@@ -62,8 +62,12 @@ export function AdminTab({ equipmentDict, taskGroups, workspaces, surveyParamete
   const [isAddingSurveyParam, setIsAddingSurveyParam] = useState(false);
   const [editingSurveyParam, setEditingSurveyParam] = useState<SurveyParameter | null>(null);
 
+  // Check pending users count
+  const pendingUsersCount = (appUsers || []).filter(u => u.status === 'pending' && !isOwnerEmail(u.email)).length;
+
   // General tab state
   const [activeConfigTab, setActiveConfigTab] = useState<'campaigns' | 'stations' | 'eq' | 'tg' | 'survey' | 'users' | 'roles'>(
+    pendingUsersCount > 0 && hasUsersAccess ? 'users' :
     hasStationsAccess ? 'stations' : 
     hasCampaignsAccess ? 'campaigns' : 
     hasTasksAccess ? 'tg' : 
@@ -71,6 +75,7 @@ export function AdminTab({ equipmentDict, taskGroups, workspaces, surveyParamete
   );
 
   const [expandedMenu, setExpandedMenu] = useState<'system' | 'operation' | 'tasks' | null>(
+    (pendingUsersCount > 0 && hasUsersAccess) ? 'system' :
     (activeConfigTab === 'users' || activeConfigTab === 'roles') ? 'system' :
     (activeConfigTab === 'campaigns' || activeConfigTab === 'stations') ? 'operation' :
     (activeConfigTab === 'tg' || activeConfigTab === 'eq' || activeConfigTab === 'survey') ? 'tasks' :
@@ -462,7 +467,16 @@ export function AdminTab({ equipmentDict, taskGroups, workspaces, surveyParamete
                   onClick={() => toggleMenu('system')}
                   className="flex items-center justify-between w-full text-left px-3 py-2 group"
                 >
-                  <div className={cn("text-[11px] font-bold uppercase tracking-wider transition-colors", isParentActive('system') ? "text-blue-600" : "text-gray-400 group-hover:text-gray-600")}>Hệ thống & Phân quyền</div>
+                  <div className="flex items-center gap-1.5">
+                    <span className={cn("text-[11px] font-bold uppercase tracking-wider transition-colors", isParentActive('system') ? "text-blue-600" : "text-gray-400 group-hover:text-gray-600")}>
+                      Hệ thống & Phân quyền
+                    </span>
+                    {pendingUsersCount > 0 && (
+                      <span className="bg-amber-500 text-white text-[10px] font-bold px-1.5 py-0.2 rounded-full animate-pulse">
+                        {pendingUsersCount}
+                      </span>
+                    )}
+                  </div>
                   <ChevronDown className={cn("w-4 h-4 transition-transform duration-200", isParentActive('system') ? "text-blue-600" : "text-gray-400", expandedMenu !== 'system' && "-rotate-90")} />
                 </button>
                 <AnimatePresence initial={false}>
@@ -475,7 +489,14 @@ export function AdminTab({ equipmentDict, taskGroups, workspaces, surveyParamete
                       className="overflow-hidden"
                     >
                       <div className="space-y-1 pb-2">
-                        <button onClick={() => setActiveConfigTab('users')} className={cn("w-full text-left px-5 py-2 rounded-lg text-sm font-medium transition-colors", activeConfigTab === 'users' ? "text-blue-700 bg-blue-50" : "text-gray-600 hover:bg-gray-200/50 hover:text-gray-900")}>Nhân viên (Users)</button>
+                        <button onClick={() => setActiveConfigTab('users')} className={cn("w-full flex items-center justify-between px-5 py-2 rounded-lg text-sm font-medium transition-colors", activeConfigTab === 'users' ? "text-blue-700 bg-blue-50" : "text-gray-600 hover:bg-gray-200/50 hover:text-gray-900")}>
+                          <span>Nhân viên (Users)</span>
+                          {pendingUsersCount > 0 && (
+                            <span className="bg-amber-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
+                              {pendingUsersCount} chờ duyệt
+                            </span>
+                          )}
+                        </button>
                         <button onClick={() => setActiveConfigTab('roles')} className={cn("w-full text-left px-5 py-2 rounded-lg text-sm font-medium transition-colors", activeConfigTab === 'roles' ? "text-blue-700 bg-blue-50" : "text-gray-600 hover:bg-gray-200/50 hover:text-gray-900")}>Vai trò & Quyền (Roles)</button>
                       </div>
                     </motion.div>

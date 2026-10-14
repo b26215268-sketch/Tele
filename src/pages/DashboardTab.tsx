@@ -440,7 +440,38 @@ export function DashboardTab({ stations, reports, assignments, currentAppUser, u
         </AnimatePresence>
       </div>
 
-      <div className="-mt-12 relative z-20 px-4 sm:px-6">
+      <div className="-mt-12 relative z-20 px-4 sm:px-6 space-y-3">
+        {/* Pending Users Notification Banner for Admin/Manager */}
+        {isAdminOrManager && (() => {
+          const pendingUsers = (appUsers || []).filter(u => u.status === 'pending' && !isOwnerEmail(u.email));
+          if (pendingUsers.length === 0) return null;
+          return (
+            <div className="bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 text-white rounded-2xl p-4 shadow-lg flex items-center justify-between gap-3 border border-amber-300/40">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
+                  <Clock className="w-5 h-5 text-white animate-pulse" />
+                </div>
+                <div className="min-w-0">
+                  <h4 className="font-bold text-xs sm:text-sm truncate">
+                    🔔 Có {pendingUsers.length} tài khoản mới chờ bạn duyệt!
+                  </h4>
+                  <p className="text-[11px] text-amber-100 truncate">
+                    {pendingUsers.map(u => u.displayName || u.email).slice(0, 2).join(', ')}
+                    {pendingUsers.length > 2 ? ` và ${pendingUsers.length - 2} người khác` : ''}
+                  </p>
+                </div>
+              </div>
+              <Button
+                size="sm"
+                onClick={() => setActiveTab('admin')}
+                className="bg-white hover:bg-amber-50 text-amber-900 font-bold text-xs py-2 px-3.5 rounded-xl shrink-0 shadow-xs cursor-pointer border-0"
+              >
+                Duyệt ngay →
+              </Button>
+            </div>
+          );
+        })()}
+
         <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <History className="w-5 h-5 text-blue-500" />

@@ -14,13 +14,22 @@ import { Input } from '../components/ui/Input';
 import { BRAND_COLORS, getStationIcon, formatStationName } from '../lib/constants';
 import { cn, removeVietnameseTones } from '../lib/utils';
 import { MapUpdater, LocateControl, StationCodeToggleControl, MapResizer, MapLayerSwitcherControl, MAP_TILE_PROVIDERS, MapType, startPointIcon } from '../components/MapComponents';
-import { isManagerOrAdmin } from '../lib/permissions';
+import { isManagerOrAdmin, isOwnerEmail } from '../lib/permissions';
 
 export function PlannerTab({ stations, assignments, appUsers, user, reports, taskGroups, currentAppUser, roles, campaigns, selectedCampaignId, onOpenCreateReport }: { stations: Station[], assignments: Assignment[], appUsers: AppUser[], user: User, reports: Report[], taskGroups: TaskGroup[], currentAppUser: AppUser | null, roles: AppRole[], campaigns?: import('../types').Campaign[], selectedCampaignId?: string, onOpenCreateReport: (stationId: string, assignmentId?: string) => void }) {
   const [mapType, setMapType] = useState<MapType>('google');
   
-  // Plan mode: 'month' (default for bulk assigning whole month) vs 'day' (daily AI route)
-  const [planMode, setPlanMode] = useState<'month' | 'day'>('month');
+  // Check permissions: Only Admin and Manager (or owner) can plan and assign
+  const isAdminOrManager = isManagerOrAdmin(user?.email, currentAppUser, roles);
+
+  // Plan mode: 'month' (for managers/admins) vs 'day' (daily AI route & staff personal route)
+  const [planMode, setPlanMode] = useState<'month' | 'day'>(isAdminOrManager ? 'month' : 'day');
+
+  useEffect(() => {
+    if (!isAdminOrManager && planMode !== 'day') {
+      setPlanMode('day');
+    }
+  }, [isAdminOrManager, planMode]);
   
   // Monthly assignment state
   const [selectedMonth, setSelectedMonth] = useState(format(new Date(), 'yyyy-MM'));
@@ -67,8 +76,6 @@ export function PlannerTab({ stations, assignments, appUsers, user, reports, tas
   const [showStationCode, setShowStationCode] = useState(false);
   const [stationSearchTerm, setStationSearchTerm] = useState('');
 
-  // Check permissions: Only Admin and Manager (or owner) can plan and assign
-  const isAdminOrManager = isManagerOrAdmin(user?.email, currentAppUser, roles);
 
   const currentAssignments = useMemo(() => {
     if (!isAdminOrManager) {
@@ -421,6 +428,49 @@ export function PlannerTab({ stations, assignments, appUsers, user, reports, tas
             <div className="w-16 h-16 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mb-4"></div>
             <h3 className="text-lg font-bold text-gray-900 mb-2">Đang tối ưu lộ trình</h3>
             <p className="text-sm text-gray-600">{optimizeProgress}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Role Context Banner */}
+      {!isAdminOrManager ? (
+        <div className="bg-gradient-to-r from-emerald-50 via-teal-50 to-green-50 border border-emerald-200/90 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center font-bold shadow-xs shrink-0">
+              <Navigation className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-base font-bold text-gray-900">Lộ trình khảo sát của tôi</h3>
+                <span className="px-2 py-0.5 rounded-md text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                  🛠️ Kỹ sư hiện trường
+                </span>
+              </div>
+              <p className="text-xs text-gray-600 mt-0.5">
+                Các trạm được giao cho bạn thực hiện. Sử dụng tính năng "Tối ưu AI" để tự động sắp xếp thứ tự trạm ngắn nhất từ vị trí hiện tại.
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-xl sm:text-2xl font-bold text-gray-900">Lập kế hoạch & Điều phối tuyến đường</h2>
+              <span className={cn(
+                "px-2.5 py-0.5 rounded-lg text-xs font-bold border",
+                currentAppUser?.role === 'admin' || isOwnerEmail(user?.email) 
+                  ? "bg-purple-100 text-purple-800 border-purple-200" 
+                  : "bg-blue-100 text-blue-800 border-blue-200"
+              )}>
+                {currentAppUser?.role === 'admin' || isOwnerEmail(user?.email) ? '👑 Quản trị viên (Admin)' : '💼 Quản lý vận hành (Manager)'}
+              </span>
+            </div>
+            <p className="text-xs text-gray-500 mt-1">
+              {currentAppUser?.role === 'admin' || isOwnerEmail(user?.email)
+                ? 'Toàn quyền giao việc theo tháng/ngày, điều phối trạm cho tất cả kỹ sư và tối ưu AI.'
+                : 'Lập kế hoạch phân công trạm theo đợt và điều phối lộ trình cho các kỹ sư.'}
+            </p>
           </div>
         </div>
       )}

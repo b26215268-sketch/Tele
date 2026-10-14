@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format, parseISO } from 'date-fns';
-import { Search, Bell, Layers, Map, ClipboardCheck, Upload, Database, PlusCircle, LogOut, CheckCircle2, History, X, Eye, EyeOff, Share2, FileSpreadsheet, Navigation, AlertCircle, Clock, MapPin, LayoutDashboard } from 'lucide-react';
+import { Search, Bell, Layers, Map, ClipboardCheck, Upload, Database, PlusCircle, LogOut, CheckCircle2, History, X, Eye, EyeOff, Share2, FileSpreadsheet, Navigation, AlertCircle, Clock, MapPin, LayoutDashboard, Crown, Briefcase, HardHat } from 'lucide-react';
 import { MapContainer, TileLayer, Marker, Popup, Tooltip as LeafletTooltip } from 'react-leaflet';
 import { collection, addDoc, updateDoc, setDoc, doc } from 'firebase/firestore';
 import { db } from '../firebase';
@@ -11,7 +11,7 @@ import { Button } from '../components/ui/Button';
 import { cn, removeVietnameseTones, getDistance } from '../lib/utils';
 import { getStationIcon, formatStationName, createSvgMarker, BRAND_COLORS } from '../lib/constants';
 import { MapUpdater, LocateControl, StationCodeToggleControl, MapResizer, MapLayerSwitcherControl, MAP_TILE_PROVIDERS, MapType } from '../components/MapComponents';
-import { isManagerOrAdmin, isOwnerEmail } from '../lib/permissions';
+import { isManagerOrAdmin, isOwnerEmail, getRoleInfo } from '../lib/permissions';
 
 export function DashboardTab({ stations, reports, assignments, currentAppUser, user, logout, validationWarnings, setValidationWarnings, setActiveTab, campaigns, selectedCampaignId, setSelectedCampaignId, onOpenCreateReport, appUsers, roles }: { stations: Station[], reports: Report[], assignments: Assignment[], currentAppUser: AppUser | null, user: User, logout: () => void, validationWarnings: ValidationWarning[] | null, setValidationWarnings: (warnings: ValidationWarning[] | null) => void, setActiveTab: (tab: Tab) => void, campaigns: Campaign[], selectedCampaignId: string, setSelectedCampaignId: (id: string) => void, onOpenCreateReport: (stationId: string, assignmentId?: string) => void, appUsers?: AppUser[], roles?: AppRole[] }) {
   const [mapType, setMapType] = useState<MapType>('google');
@@ -93,7 +93,7 @@ export function DashboardTab({ stations, reports, assignments, currentAppUser, u
   const isAdminOrManager = isManagerOrAdmin(user?.email, currentAppUser, roles || []);
   const isStaff = !isAdminOrManager;
 
-  const [dashboardViewMode, setDashboardViewMode] = useState<'staff' | 'manager'>('staff');
+  const [dashboardViewMode, setDashboardViewMode] = useState<'staff' | 'manager'>(isAdminOrManager ? 'manager' : 'staff');
   const [staffTaskScope, setStaffTaskScope] = useState<'mine' | 'all'>('mine');
 
   const todayStr = format(new Date(), 'yyyy-MM-dd');
@@ -295,10 +295,30 @@ export function DashboardTab({ stations, reports, assignments, currentAppUser, u
             <div>
               <div className="flex items-center gap-1.5 mb-0.5">
                 <p className="text-blue-100 text-xs font-medium">Xin chào,</p>
-                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-white/20 text-white border border-white/30 backdrop-blur-sm">
-                  {currentAppUser?.role === 'admin' || isOwnerEmail(user?.email) || isOwnerEmail(currentAppUser?.email)
-                    ? 'Quản trị viên (Admin)' 
-                    : (roles?.find(r => r.id === currentAppUser?.role)?.name || (currentAppUser?.role === 'manager' ? 'Quản lý' : 'Nhân viên / Kỹ sư'))}
+                <span className={cn(
+                  "text-[10px] font-bold px-2 py-0.5 rounded-full border flex items-center gap-1 backdrop-blur-md shadow-xs",
+                  currentAppUser?.role === 'admin' || isOwnerEmail(user?.email)
+                    ? "bg-purple-900/60 text-purple-100 border-purple-300/40" 
+                    : currentAppUser?.role === 'manager'
+                    ? "bg-blue-900/60 text-blue-100 border-blue-300/40"
+                    : "bg-emerald-900/60 text-emerald-100 border-emerald-300/40"
+                )}>
+                  {currentAppUser?.role === 'admin' || isOwnerEmail(user?.email) ? (
+                    <>
+                      <Crown className="w-3 h-3 text-amber-300" />
+                      Quản trị viên (Admin)
+                    </>
+                  ) : currentAppUser?.role === 'manager' ? (
+                    <>
+                      <Briefcase className="w-3 h-3 text-cyan-300" />
+                      Quản lý (Manager)
+                    </>
+                  ) : (
+                    <>
+                      <HardHat className="w-3 h-3 text-emerald-300" />
+                      Kỹ sư hiện trường (Staff)
+                    </>
+                  )}
                 </span>
               </div>
               <h2 className="text-white font-bold text-sm sm:text-base pr-2 truncate max-w-[150px] sm:max-w-[200px]">

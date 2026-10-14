@@ -4,13 +4,13 @@ import { ref, uploadString, getDownloadURL } from 'firebase/storage';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format, parseISO } from 'date-fns';
 import { db, storage } from '../firebase';
-import { Station, EquipmentDict, TaskGroup, Workspace, Report, ReportDetail, InfrastructureCheck, Attachment, SurveyParameter, Assignment } from '../types';
+import { Station, EquipmentDict, TaskGroup, Workspace, Report, ReportDetail, InfrastructureCheck, Attachment, SurveyParameter, Assignment, AppUser } from '../types';
 import { User } from 'firebase/auth';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { Input } from '../components/ui/Input';
 import { cn } from '../lib/utils';
-import { FileText, Save, CheckCircle, Image as ImageIcon, MessageSquare, X, ChevronDown, ChevronRight, Check, ClipboardList, Search, Settings2, Trash2, Home, Cloud, Plus, History, MapPin, Clock } from 'lucide-react';
+import { FileText, Save, CheckCircle, Image as ImageIcon, MessageSquare, X, ChevronDown, ChevronRight, Check, ClipboardList, Search, Settings2, Trash2, Home, Cloud, Plus, History, MapPin, Clock, ShieldCheck, Briefcase, FolderUp, ExternalLink } from 'lucide-react';
 import { handleFirestoreError } from '../lib/firebase-utils';
 import { removeVietnameseTones } from '../lib/utils';
 
@@ -25,7 +25,9 @@ export function ReportsTab({
   initialAssignmentId = '',
   reports,
   surveyParameters,
-  assignments = []
+  assignments = [],
+  currentAppUser,
+  isAdminOrManager = false
 }: {
   stations: Station[];
   user: User;
@@ -38,10 +40,21 @@ export function ReportsTab({
   reports: Report[];
   surveyParameters: SurveyParameter[];
   assignments?: Assignment[];
+  currentAppUser?: AppUser | null;
+  isAdminOrManager?: boolean;
 }) {
   const [currentStep, setCurrentStep] = useState<number>(1);
   const [toastMessage, setToastMessage] = useState<{message: string, type: 'success' | 'error' | 'info'} | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{isOpen: boolean, title: string, message: string, onConfirm: () => void}>({ isOpen: false, title: '', message: '', onConfirm: () => {} });
+
+  // Filter task groups based on permissions
+  const availableTaskGroups = useMemo(() => {
+    if (isAdminOrManager) return taskGroups;
+    if (currentAppUser?.allowedTaskGroupIds && currentAppUser.allowedTaskGroupIds.length > 0) {
+      return taskGroups.filter(tg => currentAppUser.allowedTaskGroupIds!.includes(tg.id));
+    }
+    return taskGroups;
+  }, [taskGroups, isAdminOrManager, currentAppUser]);
 
   const [stationId, setStationId] = useState(initialStationId);
   const [assignmentId, setAssignmentId] = useState(initialAssignmentId);
@@ -67,6 +80,15 @@ export function ReportsTab({
     
     if (initialStationId) setCurrentStep(1);
   }, [initialStationId, initialAssignmentId, assignments, taskGroups]);
+
+  // Auto-select task group if employee has exactly 1 permitted task group and none is selected yet
+  useEffect(() => {
+    if (availableTaskGroups.length === 1 && !taskGroupId) {
+      const single = availableTaskGroups[0];
+      setTaskGroupId(single.id);
+      setTaskGroupSearch(single.name);
+    }
+  }, [availableTaskGroups, taskGroupId]);
 
   const selectedTaskGroup = taskGroups.find(tg => tg.id === taskGroupId);
   const [actualCategories, setActualCategories] = useState<string[]>([]);
@@ -153,6 +175,7 @@ export function ReportsTab({
   const [detailsList, setDetailsList] = useState<ReportDetail[]>([]);
   const [photos, setPhotos] = useState<{ id: string, name: string, dataUrl: string, file: File, category: 'panorama' | 'power' | 'grounding' | 'damage' | 'general' }[]>([]);
   const [photoCategory, setPhotoCategory] = useState<'panorama' | 'power' | 'grounding' | 'damage' | 'general'>('general');
+  const [googleDriveUrl, setGoogleDriveUrl] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   
   const [infraCheck, setInfraCheck] = useState<InfrastructureCheck>({
@@ -455,6 +478,7 @@ export function ReportsTab({
         content: reportContent.trim() ? reportContent.trim() : (hasEquipmentModule ? 'Báo cáo chi tiết thiết bị' : 'Báo cáo khảo sát & bảo dưỡng chung'),
         equipmentDetails: hasEquipmentModule && !isNoMaterial ? validDetailsList : [],
         attachments: uploadedAttachments,
+        googleDriveUrl: googleDriveUrl.trim() || undefined,
         surveyResults: showInfraModule ? surveyResults : {},
         infrastructureCheck: infraCheck,
         status: 'completed',
@@ -505,7 +529,7 @@ export function ReportsTab({
       setTimeout(() => setToastMessage(null), 3000);
       
       // Clear form
-      setStationId(''); setAssignmentId(''); setDetailsList([]); setPhotos([]); setNoteDialog({isOpen: false, detailId: null}); setReportContent(''); setSurveyResults({});
+      setStationId(''); setAssignmentId(''); setDetailsList([]); setPhotos([]); setGoogleDriveUrl(''); setNoteDialog({isOpen: false, detailId: null}); setReportContent(''); setSurveyResults({});
       setTaskGroupId(''); setTaskGroupSearch('');
       setCurrentStep(1);
     } catch (err: any) {
@@ -611,24 +635,38 @@ export function ReportsTab({
               </div>
 
               <div className="relative z-40">
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Loại công việc <span className="text-red-500">*</span>
-                </label>
-                <select 
-                  className="w-full border border-gray-200 p-2.5 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all"
-                  value={taskGroupId}
-                  onChange={(e) => {
-                    const id = e.target.value;
-                    setTaskGroupId(id);
-                    const selected = taskGroups.find(tg => tg.id === id);
-                    if (selected) setTaskGroupSearch(selected.name);
-                  }}
-                >
-                  <option value="">-- Chọn loại công việc --</option>
-                  {taskGroups.map(g => (
-                    <option key={g.id} value={g.id}>{g.name}</option>
-                  ))}
-                </select>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-sm font-medium text-gray-700">
+                    Loại công việc <span className="text-red-500">*</span>
+                  </label>
+                  {!isAdminOrManager && currentAppUser?.allowedTaskGroupIds && currentAppUser.allowedTaskGroupIds.length > 0 && (
+                    <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
+                      Được phân quyền: {availableTaskGroups.length}/{taskGroups.length} loại
+                    </span>
+                  )}
+                </div>
+
+                {availableTaskGroups.length === 0 ? (
+                  <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-xs">
+                    ⚠️ Tài khoản của bạn chưa được phân quyền loại công việc nào. Vui lòng liên hệ Quản lý/Admin để được phân quyền.
+                  </div>
+                ) : (
+                  <select 
+                    className="w-full border border-gray-200 p-2.5 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all"
+                    value={taskGroupId}
+                    onChange={(e) => {
+                      const id = e.target.value;
+                      setTaskGroupId(id);
+                      const selected = taskGroups.find(tg => tg.id === id);
+                      if (selected) setTaskGroupSearch(selected.name);
+                    }}
+                  >
+                    <option value="">-- Chọn loại công việc --</option>
+                    {availableTaskGroups.map(g => (
+                      <option key={g.id} value={g.id}>{g.name}</option>
+                    ))}
+                  </select>
+                )}
               </div>
 
               {taskGroupId && (selectedTaskGroup?.modules?.includes('EQUIPMENT') ?? (selectedTaskGroup?.requiresEquipment !== false)) && (
@@ -972,7 +1010,44 @@ export function ReportsTab({
                           />
                         </label>
                       </div>
-                      <p className="text-xs text-gray-500 italic">Chọn danh mục trước khi bấm tải ảnh lên để hệ thống phân loại. Ảnh sẽ được tự động nén thu nhỏ.</p>
+                      <p className="text-xs text-gray-500 italic">Chọn danh mục trước khi bấm tải ảnh lên để hệ thống phân loại. Ảnh sẽ được tự động nén và gắn watermark GPS/thời gian.</p>
+
+                      {/* Google Drive Link for large photo batches */}
+                      <div className="mt-3 p-3 bg-gradient-to-r from-blue-50/80 to-indigo-50/50 border border-blue-200/80 rounded-xl space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <div className="w-6 h-6 rounded-lg bg-blue-600 text-white flex items-center justify-center shadow-sm">
+                              <FolderUp className="w-3.5 h-3.5" />
+                            </div>
+                            <div>
+                              <h4 className="text-xs font-bold text-gray-900">Link thư mục Google Drive (Khi chụp nhiều ảnh)</h4>
+                              <p className="text-[11px] text-gray-500">Tùy chọn: Dành cho công việc chụp hàng chục/trăm ảnh gốc dung lượng lớn</p>
+                            </div>
+                          </div>
+                          {googleDriveUrl && (
+                            <a 
+                              href={googleDriveUrl} 
+                              target="_blank" 
+                              rel="noopener noreferrer"
+                              className="text-xs text-blue-600 hover:text-blue-800 font-semibold flex items-center gap-1 hover:underline px-2 py-0.5 bg-white border border-blue-200 rounded-lg shadow-xs"
+                            >
+                              Mở thư mục <ExternalLink className="w-3 h-3" />
+                            </a>
+                          )}
+                        </div>
+                        <div className="relative">
+                          <input 
+                            type="url"
+                            value={googleDriveUrl}
+                            onChange={(e) => setGoogleDriveUrl(e.target.value)}
+                            placeholder="Dán link thư mục Google Drive tại đây (vd: https://drive.google.com/drive/folders/...)"
+                            className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2 text-xs text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                          />
+                        </div>
+                        <p className="text-[10px] text-gray-500 italic">
+                          💡 Nhân viên có thể tải trọn bộ album ảnh lên Google Drive, dán link vào đây để Admin & Quản lý xem toàn bộ file ảnh gốc.
+                        </p>
+                      </div>
                     </div>
                   </div>
                 );

@@ -148,37 +148,45 @@ export default function App() {
   const [prefilledStationId, setPrefilledStationId] = useState<string>('');
   const [prefilledAssignmentId, setPrefilledAssignmentId] = useState<string>('');
 
-  // Define clear role roles: Admin / Manager vs Staff
-  const isAdminOrManager = isManagerOrAdmin(user?.email, currentAppUser, roles);
-  const isStaff = !isAdminOrManager;
+  const [simulatedRole, setSimulatedRole] = useState<'admin' | 'manager' | 'staff' | null>(null);
+
+  // Real user permission vs Preview simulation
+  const isActualAdmin = isOwnerEmail(user?.email) || currentAppUser?.role === 'admin';
+  const realRole = isActualAdmin ? 'admin' : (currentAppUser?.role === 'manager' ? 'manager' : 'staff');
+
+  const effectiveRole = isActualAdmin && simulatedRole ? simulatedRole : realRole;
+  const effectiveIsAdmin = effectiveRole === 'admin';
+  const effectiveIsManager = effectiveRole === 'manager';
+  const effectiveIsStaff = effectiveRole === 'staff';
+  const effectiveIsAdminOrManager = effectiveIsAdmin || effectiveIsManager;
+
+  const effectiveAppUser = useMemo<AppUser | null>(() => {
+    if (!currentAppUser) return null;
+    return {
+      ...currentAppUser,
+      role: effectiveRole
+    };
+  }, [currentAppUser, effectiveRole]);
 
   // Helper to check permission
   const checkPermission = (permId: string) => {
-    return hasPermission(user?.email, currentAppUser, roles, permId);
+    if (effectiveIsAdmin) return true;
+    return hasPermission(user?.email, effectiveAppUser, roles, permId);
   };
 
-  const hasAdminAccess = isOwnerEmail(user?.email) || 
-    currentAppUser?.role === 'admin' || 
-    checkPermission('admin.users') || 
-    checkPermission('admin.roles') || 
-    checkPermission('admin.campaigns') || 
-    checkPermission('admin.stations') || 
-    checkPermission('admin.tasks');
+  const hasAdminAccess = effectiveIsAdmin;
   const canAccessPlanner = true;
-  const canAccessReports = isAdminOrManager || checkPermission('view.reports');
+  const canAccessReports = effectiveIsAdminOrManager;
 
   // Auto-redirect unauthorized users from restricted tabs
   useEffect(() => {
-    if (activeTab === 'admin' && currentAppUser && !hasAdminAccess) {
+    if (activeTab === 'admin' && !hasAdminAccess) {
       setActiveTab('dashboard');
     }
-    if (activeTab === 'planner' && currentAppUser && !canAccessPlanner) {
+    if (activeTab === 'reportManager' && !canAccessReports) {
       setActiveTab('dashboard');
     }
-    if (activeTab === 'reportManager' && currentAppUser && !canAccessReports) {
-      setActiveTab('dashboard');
-    }
-  }, [activeTab, currentAppUser, hasAdminAccess, canAccessPlanner, canAccessReports]);
+  }, [activeTab, hasAdminAccess, canAccessReports]);
 
   // Auto-reset selected campaign if it gets closed
   useEffect(() => {
@@ -216,7 +224,10 @@ export default function App() {
             // Check if there is an existing record created by admin by email
             let existingRole = isOwner ? 'admin' : 'staff';
             let existingPermissions: string[] | undefined = undefined;
+            let existingAllowedTaskGroupIds: string[] | undefined = undefined;
+            let existingStatus: 'active' | 'pending' | 'blocked' = isOwner ? 'active' : 'pending';
             let existingDisplayName = u.displayName || (emailLower?.includes('manh') ? 'Kỹ sư Mạnh' : u.email?.split('@')[0]) || 'Kỹ sư';
+            let isPreAdded = false;
 
             if (emailLower) {
               try {
@@ -225,9 +236,12 @@ export default function App() {
                 if (!querySnap.empty) {
                   const matchedDoc = querySnap.docs[0];
                   const data = matchedDoc.data() as AppUser;
+                  isPreAdded = true;
                   if (data.role) existingRole = data.role;
                   if (data.permissions) existingPermissions = data.permissions;
                   if (data.displayName) existingDisplayName = data.displayName;
+                  if (data.allowedTaskGroupIds) existingAllowedTaskGroupIds = data.allowedTaskGroupIds;
+                  existingStatus = data.status || 'active'; // Pre-added accounts by admin default to active
                   if (matchedDoc.id !== u.uid) {
                     try {
                       await deleteDoc(matchedDoc.ref);
@@ -241,11 +255,18 @@ export default function App() {
               }
             }
 
+            // Unknown accounts not created beforehand by Admin and not Owner are put in Pending state
+            if (!isOwner && !isPreAdded) {
+              existingStatus = 'pending';
+            }
+
             const newUser: AppUser = {
               id: u.uid,
               email: u.email,
               displayName: existingDisplayName,
               role: existingRole,
+              status: existingStatus,
+              ...(existingAllowedTaskGroupIds ? { allowedTaskGroupIds: existingAllowedTaskGroupIds } : {}),
               ...(existingPermissions ? { permissions: existingPermissions } : {}),
               createdAt: new Date().toISOString()
             };
@@ -253,15 +274,37 @@ export default function App() {
             setCurrentAppUser(newUser);
           } else {
             const existingData = userSnap.data() as AppUser;
-            // Auto-promote owner account so they always have admin module access
-            if (isOwner && existingData.role !== 'admin') {
-               await updateDoc(userRef, { role: 'admin' });
-               existingData.role = 'admin';
+            let needsUpdate = false;
+            const updatePayload: Partial<AppUser> = {};
+
+            // Auto-promote owner account so they always have admin module access & active status
+            if (isOwner) {
+              if (existingData.role !== 'admin') {
+                updatePayload.role = 'admin';
+                existingData.role = 'admin';
+                needsUpdate = true;
+              }
+              if (existingData.status !== 'active') {
+                updatePayload.status = 'active';
+                existingData.status = 'active';
+                needsUpdate = true;
+              }
+            } else if (!existingData.status) {
+              // Legacy accounts default to active
+              updatePayload.status = 'active';
+              existingData.status = 'active';
+              needsUpdate = true;
             }
+
             // Backwards compatibility: treat worker as staff
             if (existingData.role === 'worker') {
+              updatePayload.role = 'staff';
               existingData.role = 'staff';
-              await updateDoc(userRef, { role: 'staff' });
+              needsUpdate = true;
+            }
+
+            if (needsUpdate) {
+              await updateDoc(userRef, updatePayload);
             }
             setCurrentAppUser(existingData);
           }
@@ -612,6 +655,109 @@ export default function App() {
     );
   }
 
+  // Pending approval screen: If the user logged in but has not been approved by Admin yet
+  if (currentAppUser?.status === 'pending' && !isOwnerEmail(user.email)) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-amber-50 via-sky-50 to-gray-50 flex items-center justify-center p-4">
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="max-w-md w-full bg-white rounded-3xl p-6 sm:p-8 shadow-xl border border-amber-200 text-center"
+        >
+          <div className="w-16 h-16 rounded-2xl bg-amber-100 flex items-center justify-center mx-auto mb-5 text-amber-600">
+            <Clock className="w-8 h-8 animate-pulse" />
+          </div>
+          <span className="inline-block text-xs font-bold uppercase tracking-wider px-3 py-1 bg-amber-100 text-amber-800 rounded-full mb-3">
+            Chờ Quản trị viên kích hoạt
+          </span>
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">Tài khoản chưa được kích hoạt</h2>
+          <p className="text-sm text-gray-600 mb-6 leading-relaxed">
+            Xin chào <strong className="text-gray-900">{user.displayName || user.email}</strong>! Bạn đã đăng nhập thành công qua Google. Tuy nhiên tài khoản này chưa được Quản trị viên (Admin) hoặc Quản lý (Manager) kích hoạt và phân công danh mục công việc.
+          </p>
+
+          <div className="bg-gray-50 rounded-2xl p-4 text-left text-xs space-y-2 border border-gray-100 mb-6">
+            <div className="flex justify-between">
+              <span className="text-gray-500">Email:</span>
+              <span className="font-semibold text-gray-800">{user.email}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-500">Mã người dùng:</span>
+              <span className="font-mono text-gray-600 truncate max-w-[200px]">{user.uid}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-500">Trạng thái:</span>
+              <span className="font-bold text-amber-600 flex items-center gap-1">
+                <Clock className="w-3.5 h-3.5" /> Chờ phê duyệt (Pending)
+              </span>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <Button 
+              onClick={async () => {
+                try {
+                  const snap = await getDoc(doc(db, 'users', user.uid));
+                  if (snap.exists()) {
+                    const uData = snap.data() as AppUser;
+                    setCurrentAppUser(uData);
+                    if (uData.status === 'active') {
+                      alert('Tài khoản đã được kích hoạt thành công!');
+                    } else {
+                      alert('Tài khoản vẫn đang ở trạng thái chờ duyệt. Vui lòng liên hệ Admin.');
+                    }
+                  }
+                } catch (e: any) {
+                  console.error(e);
+                }
+              }} 
+              className="w-full py-2.5 bg-blue-600 hover:bg-blue-700"
+            >
+              Kiểm tra trạng thái kích hoạt
+            </Button>
+            <Button 
+              variant="secondary" 
+              onClick={logout} 
+              className="w-full py-2.5 text-gray-600 hover:text-gray-800"
+            >
+              <LogOut className="w-4 h-4 mr-2" /> Đăng xuất tài khoản khác
+            </Button>
+          </div>
+          
+          <p className="text-[11px] text-gray-400 mt-5">
+            Admin có thể phê duyệt và gán loại công việc cho bạn ngay trong mục "Quản trị hệ thống".
+          </p>
+        </motion.div>
+      </div>
+    );
+  }
+
+  // Blocked account screen
+  if (currentAppUser?.status === 'blocked' && !isOwnerEmail(user.email)) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="max-w-md w-full bg-white rounded-3xl p-6 sm:p-8 shadow-xl border border-red-200 text-center"
+        >
+          <div className="w-16 h-16 rounded-2xl bg-red-100 flex items-center justify-center mx-auto mb-5 text-red-600">
+            <Shield className="w-8 h-8" />
+          </div>
+          <span className="inline-block text-xs font-bold uppercase tracking-wider px-3 py-1 bg-red-100 text-red-800 rounded-full mb-3">
+            Tài khoản bị khóa
+          </span>
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">Truy cập bị từ chối</h2>
+          <p className="text-sm text-gray-600 mb-6 leading-relaxed">
+            Tài khoản <strong className="text-gray-900">{user.email}</strong> đã bị tạm khóa bởi Quản trị viên. Vui lòng liên hệ bộ phận quản lý hệ thống nếu bạn cho rằng đây là một sự nhầm lẫn.
+          </p>
+          <Button variant="secondary" onClick={logout} className="w-full py-2.5">
+            <LogOut className="w-4 h-4 mr-2" /> Đăng xuất
+          </Button>
+        </motion.div>
+      </div>
+    );
+  }
+
   const activeCampaignIds = campaigns.filter(c => c.status === 'active').map(c => c.id);
   
   const campaignFilteredStations = selectedCampaignId === 'all' 
@@ -642,7 +788,7 @@ export default function App() {
 
   // Apply Role Base Access Control for staff
   let baseFilteredStations = campaignFilteredStations;
-  if (!isAdminOrManager && !checkPermission('view.all_stations')) {
+  if (!effectiveIsAdminOrManager && !checkPermission('view.all_stations')) {
     const userOnlyStations = campaignFilteredStations.filter(isStationAssignedToUser);
     baseFilteredStations = userOnlyStations.length > 0 ? userOnlyStations : campaignFilteredStations;
   }
@@ -651,6 +797,24 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-[#bde0fe] via-[#e0f2fe] to-gray-50 pb-24">
+      {/* Role Simulation Banner for Admins */}
+      {simulatedRole && (
+        <div className="bg-gradient-to-r from-amber-500 to-orange-500 text-white px-4 py-2 text-xs font-semibold flex items-center justify-between shadow-md sticky top-0 z-50">
+          <div className="flex items-center gap-2">
+            <Eye className="w-4 h-4 shrink-0" />
+            <span>
+              Chế độ xem trước: <strong className="underline uppercase tracking-wide">{simulatedRole === 'admin' ? 'Quản trị viên (Admin)' : simulatedRole === 'manager' ? 'Quản lý (Manager)' : 'Kỹ sư hiện trường (Staff)'}</strong>. Giao diện, menu và quyền hạn đang phản ánh vai trò này.
+            </span>
+          </div>
+          <button
+            onClick={() => setSimulatedRole(null)}
+            className="bg-white/20 hover:bg-white/30 px-3 py-1 rounded-lg text-white text-xs font-bold transition-colors ml-3 shrink-0 flex items-center gap-1 cursor-pointer"
+          >
+            Quay lại quyền Admin
+          </button>
+        </div>
+      )}
+
       {/* Header */}
       {activeTab !== 'dashboard' && (
         <header className="bg-white border-b border-gray-200 sticky top-0 z-30">
@@ -679,8 +843,54 @@ export default function App() {
             </div>
             
             <div className="flex items-center gap-2 sm:gap-4">
-              <span className="text-sm text-gray-500 hidden sm:block">{user.displayName}</span>
-              <button onClick={logout} className="p-2 text-gray-400 hover:text-red-600 transition-colors">
+              {/* Role Indicator & Simulator */}
+              {isActualAdmin ? (
+                <div className="flex items-center gap-1.5 bg-gray-100 p-1 rounded-xl border border-gray-200">
+                  <span className="text-[10px] font-bold text-gray-500 uppercase px-1 hidden md:inline">Xem vai trò:</span>
+                  <button
+                    onClick={() => setSimulatedRole(null)}
+                    className={cn(
+                      "px-2 py-1 rounded-lg text-xs font-bold transition-all",
+                      !simulatedRole ? "bg-purple-700 text-white shadow-2xs" : "text-gray-600 hover:text-gray-900"
+                    )}
+                    title="Quyền Admin đầy đủ"
+                  >
+                    Admin
+                  </button>
+                  <button
+                    onClick={() => setSimulatedRole('manager')}
+                    className={cn(
+                      "px-2 py-1 rounded-lg text-xs font-bold transition-all",
+                      simulatedRole === 'manager' ? "bg-blue-700 text-white shadow-2xs" : "text-gray-600 hover:text-gray-900"
+                    )}
+                    title="Xem thử vai trò Manager"
+                  >
+                    Manager
+                  </button>
+                  <button
+                    onClick={() => setSimulatedRole('staff')}
+                    className={cn(
+                      "px-2 py-1 rounded-lg text-xs font-bold transition-all",
+                      simulatedRole === 'staff' ? "bg-emerald-700 text-white shadow-2xs" : "text-gray-600 hover:text-gray-900"
+                    )}
+                    title="Xem thử vai trò Staff"
+                  >
+                    Staff
+                  </button>
+                </div>
+              ) : (
+                <span className={cn(
+                  "text-[10px] font-bold px-2 py-0.5 rounded-md border hidden sm:inline-block",
+                  effectiveIsAdmin ? "bg-purple-100 text-purple-800 border-purple-200" :
+                  effectiveIsManager ? "bg-blue-100 text-blue-800 border-blue-200" :
+                  "bg-emerald-100 text-emerald-800 border-emerald-200"
+                )}>
+                  {effectiveIsAdmin ? '👑 Admin' : effectiveIsManager ? '💼 Manager' : '🛠️ Staff'}
+                </span>
+              )}
+
+              <span className="text-sm text-gray-500 hidden sm:block truncate max-w-[100px]">{user.displayName || user.email}</span>
+              <button onClick={logout} className="p-2 text-gray-400 hover:text-red-600 transition-colors" title="Đăng xuất">
                 <LogOut className="w-5 h-5" />
               </button>
             </div>
@@ -690,15 +900,112 @@ export default function App() {
 
       {/* Main Content */}
       <main className={cn("mx-auto relative", activeTab === 'dashboard' ? "pb-24" : (activeTab === 'planner' || activeTab === 'admin' || activeTab === 'stations') ? "p-3 sm:p-6 pb-24 w-full" : "p-3 sm:p-6 pb-24 max-w-4xl")}>
-        {activeTab === 'dashboard' && <DashboardTab key="dashboard" stations={campaignFilteredStations.length > 0 ? campaignFilteredStations : stations} reports={reports} assignments={assignments} currentAppUser={currentAppUser} user={user} logout={logout} validationWarnings={validationWarnings} setValidationWarnings={setValidationWarnings} setActiveTab={setActiveTab} campaigns={campaigns} selectedCampaignId={selectedCampaignId} setSelectedCampaignId={setSelectedCampaignId} onOpenCreateReport={(stationId, assignmentId) => { setPrefilledStationId(stationId); setPrefilledAssignmentId(assignmentId || ''); setActiveTab('reports'); }} appUsers={appUsers} roles={roles} />}
-        {activeTab === 'stations' && <StationsTab key="stations" stations={filteredStations} reports={reports} validationWarnings={validationWarnings} setValidationWarnings={setValidationWarnings} campaigns={campaigns} selectedCampaignId={selectedCampaignId} appUsers={appUsers} />}
-        {activeTab === 'planner' && <PlannerTab key="planner" stations={filteredStations} assignments={assignments} appUsers={appUsers} user={user} reports={reports} taskGroups={taskGroups} currentAppUser={currentAppUser} roles={roles} campaigns={campaigns} selectedCampaignId={selectedCampaignId} onOpenCreateReport={(stationId, assignmentId) => { setPrefilledStationId(stationId); setPrefilledAssignmentId(assignmentId || ''); setActiveTab('reports'); }} />}
-        {activeTab === 'admin' && <AdminTab key="admin" equipmentDict={equipmentDict} taskGroups={taskGroups} workspaces={workspaces} surveyParameters={surveyParameters} stations={filteredStations} reports={reports} validationWarnings={validationWarnings} setValidationWarnings={setValidationWarnings} campaigns={campaigns} selectedCampaignId={selectedCampaignId} appUsers={appUsers} currentAppUser={currentAppUser} roles={roles} />}
-        {activeTab === 'reports' && <ReportsTab key="reports" stations={filteredStations} user={user} equipmentDict={equipmentDict} taskGroups={taskGroups} workspaces={workspaces} technologies={['2G', '3G', '4G', '5G']} initialStationId={prefilledStationId} initialAssignmentId={prefilledAssignmentId} reports={reports} surveyParameters={surveyParameters} assignments={assignments} />}
-        {activeTab === 'reportManager' && canAccessReports && <ReportManagementTab key="reportManager" reports={reports} stations={stations} taskGroups={taskGroups} equipmentDict={equipmentDict} />}
+        {activeTab === 'dashboard' && (
+          <DashboardTab 
+            key="dashboard" 
+            stations={campaignFilteredStations.length > 0 ? campaignFilteredStations : stations} 
+            reports={reports} 
+            assignments={assignments} 
+            currentAppUser={effectiveAppUser} 
+            user={user} 
+            logout={logout} 
+            validationWarnings={validationWarnings} 
+            setValidationWarnings={setValidationWarnings} 
+            setActiveTab={setActiveTab} 
+            campaigns={campaigns} 
+            selectedCampaignId={selectedCampaignId} 
+            setSelectedCampaignId={setSelectedCampaignId} 
+            onOpenCreateReport={(stationId, assignmentId) => { 
+              setPrefilledStationId(stationId); 
+              setPrefilledAssignmentId(assignmentId || ''); 
+              setActiveTab('reports'); 
+            }} 
+            appUsers={appUsers} 
+            roles={roles} 
+          />
+        )}
+        {activeTab === 'stations' && (
+          <StationsTab 
+            key="stations" 
+            stations={filteredStations} 
+            reports={reports} 
+            validationWarnings={validationWarnings} 
+            setValidationWarnings={setValidationWarnings} 
+            campaigns={campaigns} 
+            selectedCampaignId={selectedCampaignId} 
+            appUsers={appUsers} 
+          />
+        )}
+        {activeTab === 'planner' && (
+          <PlannerTab 
+            key="planner" 
+            stations={filteredStations} 
+            assignments={assignments} 
+            appUsers={appUsers} 
+            user={user} 
+            reports={reports} 
+            taskGroups={taskGroups} 
+            currentAppUser={effectiveAppUser} 
+            roles={roles} 
+            campaigns={campaigns} 
+            selectedCampaignId={selectedCampaignId} 
+            onOpenCreateReport={(stationId, assignmentId) => { 
+              setPrefilledStationId(stationId); 
+              setPrefilledAssignmentId(assignmentId || ''); 
+              setActiveTab('reports'); 
+            }} 
+          />
+        )}
+        {activeTab === 'admin' && hasAdminAccess && (
+          <AdminTab 
+            key="admin" 
+            equipmentDict={equipmentDict} 
+            taskGroups={taskGroups} 
+            workspaces={workspaces} 
+            surveyParameters={surveyParameters} 
+            stations={filteredStations} 
+            reports={reports} 
+            validationWarnings={validationWarnings} 
+            setValidationWarnings={setValidationWarnings} 
+            campaigns={campaigns} 
+            selectedCampaignId={selectedCampaignId} 
+            appUsers={appUsers} 
+            currentAppUser={effectiveAppUser} 
+            roles={roles} 
+          />
+        )}
+        {activeTab === 'reports' && (
+          <ReportsTab 
+            key="reports" 
+            stations={filteredStations} 
+            user={user} 
+            equipmentDict={equipmentDict} 
+            taskGroups={taskGroups} 
+            workspaces={workspaces} 
+            technologies={['2G', '3G', '4G', '5G']} 
+            initialStationId={prefilledStationId} 
+            initialAssignmentId={prefilledAssignmentId} 
+            reports={reports} 
+            surveyParameters={surveyParameters} 
+            assignments={assignments} 
+            currentAppUser={effectiveAppUser}
+            isAdminOrManager={effectiveIsAdminOrManager}
+          />
+        )}
+        {activeTab === 'reportManager' && canAccessReports && (
+          <ReportManagementTab 
+            key="reportManager" 
+            reports={reports} 
+            stations={stations} 
+            taskGroups={taskGroups} 
+            equipmentDict={equipmentDict} 
+            currentAppUser={effectiveAppUser} 
+            user={user} 
+          />
+        )}
       </main>
 
-      {/* Bottom Navigation */}
+      {/* Bottom Navigation with clear role-based structure */}
       <nav className="fixed bottom-0 left-0 right-0 bg-white shadow-[0_-10px_40px_rgba(0,0,0,0.08)] rounded-t-[2rem] z-40 pb-[env(safe-area-inset-bottom)]">
         <div className="max-w-4xl mx-auto flex justify-around items-end px-2 sm:px-6 relative h-[4.5rem]">
           <NavButton 
@@ -707,14 +1014,13 @@ export default function App() {
             icon={<Home />} 
             label="Trang chủ" 
           />
-          {canAccessPlanner && (
-            <NavButton 
-              active={activeTab === 'planner'} 
-              onClick={() => setActiveTab('planner')} 
-              icon={<Route />} 
-              label="Lộ trình" 
-            />
-          )}
+          
+          <NavButton 
+            active={activeTab === 'planner'} 
+            onClick={() => setActiveTab('planner')} 
+            icon={<Route />} 
+            label={effectiveIsStaff ? "Lộ trình" : effectiveIsManager ? "Kế hoạch" : "Điều phối"} 
+          />
           
           <div 
              className="relative -top-5 flex flex-col items-center group cursor-pointer w-14 sm:w-16" 
@@ -745,12 +1051,13 @@ export default function App() {
               label="Thống kê" 
             />
           )}
+          
           {hasAdminAccess && (
             <NavButton 
               active={activeTab === 'admin'} 
               onClick={() => setActiveTab('admin')} 
               icon={<Database />} 
-              label="Danh mục" 
+              label="Quản trị" 
             />
           )}
         </div>

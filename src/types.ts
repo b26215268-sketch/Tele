@@ -3,9 +3,12 @@ export interface AppUser {
   email: string | null;
   displayName: string | null;
   role: string;
+  status?: 'active' | 'pending' | 'blocked'; // Trạng thái tài khoản
+  allowedTaskGroupIds?: string[]; // Các loại công việc nhân viên được phép làm
   permissions?: string[]; // Flexible permissions list
   department?: string;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface AppRole {
@@ -151,8 +154,8 @@ export interface Report {
   completedAt?: string; // thoi_gian_hoan_thanh
   createdAt?: string; // thoi_gian_tao_bc
   updatedAt?: string;
-  history?: ReportHistory[];
   attachments?: Attachment[]; // 1-Nhiều từ BaoCao đến DinhKem
+  googleDriveUrl?: string; // Link thư mục Google Drive chứa album ảnh chất lượng cao / số lượng lớn
 }
 
 export interface Assignment {

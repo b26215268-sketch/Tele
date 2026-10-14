@@ -155,6 +155,7 @@ export interface Report {
   createdAt?: string; // thoi_gian_tao_bc
   updatedAt?: string;
   attachments?: Attachment[]; // 1-Nhiều từ BaoCao đến DinhKem
+  history?: ReportHistory[];
   googleDriveUrl?: string; // Link thư mục Google Drive chứa album ảnh chất lượng cao / số lượng lớn
 }
 

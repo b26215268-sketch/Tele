@@ -1,7 +1,7 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format, parseISO } from 'date-fns';
-import { Search, Bell, Layers, Map, ClipboardCheck, Upload, Database, PlusCircle, LogOut, CheckCircle2, History, X, Eye, EyeOff, Share2, FileSpreadsheet, Navigation, AlertCircle, Clock, MapPin, LayoutDashboard, Crown, Briefcase, HardHat } from 'lucide-react';
+import { Search, Bell, Layers, Map, ClipboardCheck, Upload, Database, PlusCircle, LogOut, CheckCircle2, History, X, Eye, EyeOff, Share2, FileSpreadsheet, Navigation, AlertCircle, Clock, MapPin, LayoutDashboard, Crown, Briefcase, HardHat, Radar } from 'lucide-react';
 import { MapContainer, TileLayer, Marker, Popup, Tooltip as LeafletTooltip } from 'react-leaflet';
 import { collection, addDoc, updateDoc, setDoc, doc } from 'firebase/firestore';
 import { db } from '../firebase';
@@ -12,6 +12,8 @@ import { cn, removeVietnameseTones, getDistance } from '../lib/utils';
 import { getStationIcon, formatStationName, createSvgMarker, BRAND_COLORS } from '../lib/constants';
 import { MapUpdater, LocateControl, StationCodeToggleControl, MapResizer, MapLayerSwitcherControl, MAP_TILE_PROVIDERS, MapType } from '../components/MapComponents';
 import { isManagerOrAdmin, isOwnerEmail, getRoleInfo } from '../lib/permissions';
+import { StaffMonthlyKpiCard } from '../components/StaffMonthlyKpiCard';
+import { StationSectorModal } from '../components/StationSectorModal';
 
 export function DashboardTab({ stations, reports, assignments, currentAppUser, user, logout, validationWarnings, setValidationWarnings, setActiveTab, campaigns, selectedCampaignId, setSelectedCampaignId, onOpenCreateReport, appUsers, roles }: { stations: Station[], reports: Report[], assignments: Assignment[], currentAppUser: AppUser | null, user: User, logout: () => void, validationWarnings: ValidationWarning[] | null, setValidationWarnings: (warnings: ValidationWarning[] | null) => void, setActiveTab: (tab: Tab) => void, campaigns: Campaign[], selectedCampaignId: string, setSelectedCampaignId: (id: string) => void, onOpenCreateReport: (stationId: string, assignmentId?: string) => void, appUsers?: AppUser[], roles?: AppRole[] }) {
   const [mapType, setMapType] = useState<MapType>('google');
@@ -90,14 +92,28 @@ export function DashboardTab({ stations, reports, assignments, currentAppUser, u
     };
   }, [filteredStations]);
 
-  const isAdminOrManager = isManagerOrAdmin(user?.email, currentAppUser, roles || []);
+  // Role calculation: when previewing Staff or assigned Staff role, enforce Staff mode
+  const isExplicitStaffRole = currentAppUser?.role === 'staff';
+  const isAdminOrManager = !isExplicitStaffRole && (currentAppUser?.role === 'admin' || currentAppUser?.role === 'manager' || isOwnerEmail(user?.email));
   const isStaff = !isAdminOrManager;
 
-  const [dashboardViewMode, setDashboardViewMode] = useState<'staff' | 'manager'>(isAdminOrManager ? 'manager' : 'staff');
+  const [dashboardViewMode, setDashboardViewMode] = useState<'staff' | 'manager'>(isStaff ? 'staff' : (isAdminOrManager ? 'manager' : 'staff'));
+
+  // Ensure switching simulation mode immediately re-aligns view mode
+  useEffect(() => {
+    if (isStaff) {
+      setDashboardViewMode('staff');
+    } else if (currentAppUser?.role === 'manager') {
+      setDashboardViewMode('manager');
+    }
+  }, [isStaff, currentAppUser?.role]);
+
   const [staffTaskScope, setStaffTaskScope] = useState<'mine' | 'all'>('mine');
 
   const todayStr = format(new Date(), 'yyyy-MM-dd');
   const currentMonthStr = format(new Date(), 'yyyy-MM');
+  const [staffSelectedMonth, setStaffSelectedMonth] = useState(currentMonthStr);
+  const [sectorModalStation, setSectorModalStation] = useState<Station | null>(null);
   const [taskFilter, setTaskFilter] = useState<'month' | 'today' | 'pending' | 'completed'>('month');
   const [staffSearchTerm, setStaffSearchTerm] = useState('');
   const [staffViewMode, setStaffViewMode] = useState<'both' | 'map' | 'list'>('both');
@@ -201,9 +217,13 @@ export function DashboardTab({ stations, reports, assignments, currentAppUser, u
       if (taskFilter === 'pending') return a.status !== 'completed';
       if (taskFilter === 'completed') return a.status === 'completed';
       // 'month' (default):
+      if (staffSelectedMonth) {
+        const m = a.deadline ? a.deadline.substring(0, 7) : (a.startDate ? a.startDate.substring(0, 7) : '');
+        if (m && m !== staffSelectedMonth) return false;
+      }
       return true;
     });
-  }, [baseStaffAssignments, taskFilter, todayStr]);
+  }, [baseStaffAssignments, taskFilter, todayStr, staffSelectedMonth]);
 
   const filteredMyAssignments = useMemo(() => {
     if (!staffSearchTerm.trim()) return myAssignments;
@@ -441,33 +461,106 @@ export function DashboardTab({ stations, reports, assignments, currentAppUser, u
       </div>
 
       <div className="-mt-12 relative z-20 px-4 sm:px-6 space-y-3">
-        {/* Pending Users Notification Banner for Admin/Manager */}
+        {/* Pending Users Quick Approval Card for Admin/Manager */}
         {isAdminOrManager && (() => {
           const pendingUsers = (appUsers || []).filter(u => u.status === 'pending' && !isOwnerEmail(u.email));
           if (pendingUsers.length === 0) return null;
           return (
-            <div className="bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 text-white rounded-2xl p-4 shadow-lg flex items-center justify-between gap-3 border border-amber-300/40">
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
-                  <Clock className="w-5 h-5 text-white animate-pulse" />
+            <div className="bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 text-white rounded-2xl p-4 sm:p-5 shadow-lg border border-amber-300/50 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
+                    <Clock className="w-5 h-5 text-white animate-pulse" />
+                  </div>
+                  <div className="min-w-0">
+                    <h4 className="font-bold text-sm sm:text-base flex items-center gap-2">
+                      🔔 {pendingUsers.length} tài khoản mới chờ phê duyệt
+                    </h4>
+                    <p className="text-xs text-amber-100">
+                      Bạn có thể chọn vai trò và duyệt kích hoạt trực tiếp ngay tại đây:
+                    </p>
+                  </div>
                 </div>
-                <div className="min-w-0">
-                  <h4 className="font-bold text-xs sm:text-sm truncate">
-                    🔔 Có {pendingUsers.length} tài khoản mới chờ bạn duyệt!
-                  </h4>
-                  <p className="text-[11px] text-amber-100 truncate">
-                    {pendingUsers.map(u => u.displayName || u.email).slice(0, 2).join(', ')}
-                    {pendingUsers.length > 2 ? ` và ${pendingUsers.length - 2} người khác` : ''}
-                  </p>
-                </div>
+                <Button
+                  size="sm"
+                  onClick={() => setActiveTab('admin')}
+                  className="bg-white/20 hover:bg-white/30 text-white font-semibold text-xs py-1.5 px-3 rounded-xl shrink-0 border border-white/30"
+                >
+                  Mở trang Quản trị →
+                </Button>
               </div>
-              <Button
-                size="sm"
-                onClick={() => setActiveTab('admin')}
-                className="bg-white hover:bg-amber-50 text-amber-900 font-bold text-xs py-2 px-3.5 rounded-xl shrink-0 shadow-xs cursor-pointer border-0"
-              >
-                Duyệt ngay →
-              </Button>
+
+              {/* Pending users list with quick approval */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 pt-1">
+                {pendingUsers.map(pUser => (
+                  <div key={pUser.id} className="bg-white text-gray-800 p-3 rounded-xl shadow-xs border border-amber-200 flex flex-col justify-between gap-2.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="font-bold text-xs sm:text-sm text-gray-900 truncate">
+                          {pUser.displayName || pUser.email?.split('@')[0]}
+                        </div>
+                        <div className="text-xs text-gray-500 truncate">{pUser.email}</div>
+                      </div>
+                      <span className="text-[10px] bg-amber-100 text-amber-800 font-bold px-2 py-0.5 rounded-full shrink-0 border border-amber-200">
+                        Chờ duyệt
+                      </span>
+                    </div>
+
+                    <div className="pt-2 border-t border-gray-100 flex items-center justify-between gap-2">
+                      <select
+                        id={`dash-pending-role-${pUser.id}`}
+                        defaultValue="staff"
+                        className="text-xs font-semibold py-1.5 px-2 border rounded-lg bg-gray-50 border-gray-200 flex-1 text-gray-700"
+                      >
+                        <option value="staff">🛠️ Kỹ sư (Staff)</option>
+                        <option value="manager">💼 Quản lý (Manager)</option>
+                        <option value="admin">👑 Quản trị viên (Admin)</option>
+                      </select>
+
+                      <div className="flex items-center gap-1 shrink-0">
+                        <Button
+                          size="sm"
+                          className="text-xs py-1 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg cursor-pointer shadow-xs"
+                          onClick={async () => {
+                            try {
+                              const sel = document.getElementById(`dash-pending-role-${pUser.id}`) as HTMLSelectElement;
+                              const chosenRole = sel ? sel.value : 'staff';
+                              await updateDoc(doc(db, 'users', pUser.id), {
+                                status: 'active',
+                                role: chosenRole,
+                                updatedAt: new Date().toISOString()
+                              });
+                              alert(`Đã duyệt kích hoạt tài khoản ${pUser.displayName || pUser.email} thành công!`);
+                            } catch (e: any) {
+                              alert('Lỗi phê duyệt: ' + e.message);
+                            }
+                          }}
+                        >
+                          Duyệt ngay
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-xs py-1 px-2 text-rose-600 hover:bg-rose-50 rounded-lg"
+                          onClick={async () => {
+                            if (!window.confirm(`Bạn có chắc muốn từ chối tài khoản ${pUser.email}?`)) return;
+                            try {
+                              await updateDoc(doc(db, 'users', pUser.id), {
+                                status: 'blocked',
+                                updatedAt: new Date().toISOString()
+                              });
+                            } catch (e: any) {
+                              alert('Lỗi: ' + e.message);
+                            }
+                          }}
+                        >
+                          Từ chối
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           );
         })()}
@@ -479,7 +572,7 @@ export function DashboardTab({ stations, reports, assignments, currentAppUser, u
               <div className="text-xs text-slate-500 font-medium mb-0.5">Tiến độ hôm nay</div>
               <div className="text-sm font-bold text-slate-800">
                 {isStaff || dashboardViewMode === 'staff' ? (
-                  `${myAssignments.filter(a => a.status === 'completed').length} / ${myAssignments.length} nhiệm vụ`
+                  `${baseStaffAssignments.filter(a => a.deadline === todayStr && a.status === 'completed').length} / ${baseStaffAssignments.filter(a => a.deadline === todayStr).length || myAssignments.length} nhiệm vụ hôm nay`
                 ) : (
                   `${assignments.filter(a => a.deadline === todayStr && a.status === 'completed').length} / ${assignments.filter(a => a.deadline === todayStr).length} nhiệm vụ hoàn thành`
                 )}
@@ -815,6 +908,19 @@ export function DashboardTab({ stations, reports, assignments, currentAppUser, u
             )}
           </AnimatePresence>
 
+          {/* Monthly KPI Progress Tracker Card for Staff */}
+          <StaffMonthlyKpiCard
+            user={user}
+            currentAppUser={currentAppUser}
+            assignments={baseStaffAssignments}
+            stations={stations}
+            selectedMonth={staffSelectedMonth}
+            onMonthChange={setStaffSelectedMonth}
+            activeFilter={taskFilter}
+            onFilterChange={setTaskFilter}
+            onNavigateToPlanner={() => setActiveTab('planner')}
+          />
+
           {/* Block: Bản đồ trạm cần thực hiện */}
           <div className="bg-white rounded-3xl p-4 sm:p-5 shadow-sm border border-slate-200/80 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
@@ -1074,6 +1180,16 @@ export function DashboardTab({ stations, reports, assignments, currentAppUser, u
                                 {isCompleted ? 'Xem / Cập nhật báo cáo' : 'Thực hiện công việc'}
                               </Button>
 
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="w-full h-8 text-[11px] rounded-xl border-indigo-200 text-indigo-700 bg-indigo-50/60 hover:bg-indigo-100 flex items-center justify-center gap-1.5 font-bold shadow-2xs"
+                                onClick={() => setSectorModalStation(station)}
+                              >
+                                <Radar className="w-3.5 h-3.5 text-indigo-600" />
+                                Sơ đồ Sector & CTCN 100m (QCVN 08)
+                              </Button>
+
                               <div className="flex gap-1.5">
                                 {!isCheckedIn && !isCompleted && (
                                   <Button
@@ -1193,6 +1309,15 @@ export function DashboardTab({ stations, reports, assignments, currentAppUser, u
                       >
                         <Navigation className="w-5 h-5" />
                       </a>
+
+                      <button
+                        type="button"
+                        onClick={() => setSectorModalStation(station)}
+                        className="p-2 text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-xl flex items-center justify-center transition-colors shrink-0"
+                        title="Sơ đồ Sector & CTCN 100m (QCVN 08)"
+                      >
+                        <Radar className="w-5 h-5" />
+                      </button>
                       
                       {!isCheckedIn && (
                         <Button 
@@ -1345,6 +1470,13 @@ export function DashboardTab({ stations, reports, assignments, currentAppUser, u
           </div>
         </div>
       </div>
+
+      {/* Station Sector & CTCN Modal (QCVN 08:2022/BTTTT) */}
+      <StationSectorModal
+        station={sectorModalStation}
+        isOpen={Boolean(sectorModalStation)}
+        onClose={() => setSectorModalStation(null)}
+      />
     </motion.div>
   );
 }

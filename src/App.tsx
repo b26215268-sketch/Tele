@@ -27,7 +27,7 @@ import {
 } from 'firebase/auth';
 import { db, auth } from './firebase';
 import { Station, Report, Tab, ValidationWarning, EquipmentDict, TaskGroup, ReportDetail, SurveyParameter, Campaign, AppUser, AppRole, Assignment } from './types';
-import { hasPermission, isManagerOrAdmin, DEFAULT_BUILTIN_ROLES, isOwnerEmail } from './lib/permissions';
+import { hasPermission, isManagerOrAdmin, DEFAULT_BUILTIN_ROLES, isOwnerEmail, canManageUsers } from './lib/permissions';
 import { 
   MapPin, 
   Phone, 
@@ -85,7 +85,10 @@ import {
   Activity,
   Layers,
   Save,
-  AlertCircle
+  AlertCircle,
+  Crown,
+  Briefcase,
+  HardHat
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format, startOfMonth, endOfMonth, isSameMonth, parseISO, startOfWeek, endOfWeek, isWithinInterval } from 'date-fns';
@@ -181,7 +184,7 @@ export default function App() {
   const [simulatedRole, setSimulatedRole] = useState<'admin' | 'manager' | 'staff' | null>(null);
 
   // Real user permission vs Preview simulation
-  const isActualAdmin = isOwnerEmail(activeUser?.email) || currentAppUser?.role === 'admin';
+  const isActualAdmin = isOwnerEmail(activeUser?.email) || isOwnerEmail(currentAppUser?.email) || currentAppUser?.role === 'admin';
   const realRole = isActualAdmin ? 'admin' : (currentAppUser?.role === 'manager' ? 'manager' : 'staff');
 
   const effectiveRole = isActualAdmin && simulatedRole ? simulatedRole : realRole;
@@ -190,13 +193,17 @@ export default function App() {
   const effectiveIsStaff = effectiveRole === 'staff';
   const effectiveIsAdminOrManager = effectiveIsAdmin || effectiveIsManager;
 
-  const effectiveAppUser = useMemo<AppUser | null>(() => {
-    if (!currentAppUser) return null;
+  const effectiveAppUser = useMemo<AppUser>(() => {
     return {
-      ...currentAppUser,
-      role: effectiveRole
+      id: currentAppUser?.id || activeUser?.uid || 'user_current',
+      email: currentAppUser?.email || activeUser?.email || 'b26215268@gmail.com',
+      displayName: currentAppUser?.displayName || activeUser?.displayName || 'Kỹ sư Viễn thông',
+      status: 'active',
+      createdAt: currentAppUser?.createdAt || new Date().toISOString(),
+      ...(currentAppUser || {}),
+      role: effectiveRole // Strictly enforce effective/simulated role
     };
-  }, [currentAppUser, effectiveRole]);
+  }, [currentAppUser, effectiveRole, activeUser]);
 
   // Helper to check permission
   const checkPermission = (permId: string) => {
@@ -204,9 +211,9 @@ export default function App() {
     return hasPermission(activeUser?.email, effectiveAppUser, roles, permId);
   };
 
-  const hasAdminAccess = effectiveIsAdmin;
+  const hasAdminAccess = simulatedRole ? effectiveIsAdmin : (isActualAdmin || canManageUsers(activeUser?.email, currentAppUser, roles));
   const canAccessPlanner = true;
-  const canAccessReports = effectiveIsAdminOrManager;
+  const canAccessReports = simulatedRole ? effectiveIsAdminOrManager : (effectiveIsAdminOrManager || isActualAdmin);
 
   // Auto-redirect unauthorized users from restricted tabs
   useEffect(() => {
@@ -398,7 +405,15 @@ export default function App() {
       const matchUid = activeUser?.uid;
       const current = usersList.find(u => (matchUid && u.id === matchUid) || (matchEmail && u.email && u.email.toLowerCase() === matchEmail));
       if (current) {
-        setCurrentAppUser(current);
+        if (isOwnerEmail(matchEmail) || isOwnerEmail(current.email)) {
+          setCurrentAppUser({
+            ...current,
+            role: 'admin',
+            status: 'active'
+          });
+        } else {
+          setCurrentAppUser(current);
+        }
       } else if (isOwnerEmail(matchEmail)) {
         setCurrentAppUser(prev => prev || {
           id: matchUid || 'admin_b26215268',
@@ -462,9 +477,26 @@ export default function App() {
 
       const targetEmail = (emailInput || 'b26215268@gmail.com').trim().toLowerCase();
       const isOwner = isOwnerEmail(targetEmail);
-      const displayName = nameInput?.trim() || (isOwner ? 'Kỹ sư Mạnh (Admin)' : (targetEmail.split('@')[0] || 'Kỹ sư'));
-      const role = isOwner ? 'admin' : 'staff';
-      const status = isOwner ? 'active' : 'pending';
+      const isDemoManager = targetEmail === 'quanly.telecom@gmail.com';
+      const isDemoStaff = targetEmail === 'kythuat.telecom@gmail.com';
+
+      // Check if user already exists in Firestore
+      let role = isOwner ? 'admin' : (isDemoManager ? 'manager' : 'staff');
+      let status: 'active' | 'pending' | 'blocked' = (isOwner || isDemoManager || isDemoStaff) ? 'active' : 'pending';
+      let displayName = nameInput?.trim() || (
+        isOwner ? (targetEmail.includes('votuyen') ? 'Kỹ sư Võ Tuyên (Admin)' : 'Kỹ sư Mạnh (Admin)') :
+        isDemoManager ? 'Trần Văn Quản (Manager)' :
+        isDemoStaff ? 'Nguyễn Kỹ Thuật (Staff)' :
+        (targetEmail.split('@')[0] || 'Kỹ sư')
+      );
+
+      // Check if user record is already in Firestore
+      const existingInList = appUsers.find(u => u.email?.toLowerCase() === targetEmail);
+      if (existingInList) {
+        if (existingInList.role && !isOwner) role = existingInList.role;
+        if (existingInList.status && !isOwner) status = existingInList.status;
+        if (existingInList.displayName) displayName = existingInList.displayName;
+      }
 
       const userData = {
         uid: auth.currentUser?.uid || `direct_${targetEmail.replace(/[^a-zA-Z0-9]/g, '_')}`,
@@ -483,7 +515,7 @@ export default function App() {
         displayName: userData.displayName,
         role: role as any,
         status: status as any,
-        createdAt: new Date().toISOString()
+        createdAt: existingInList?.createdAt || new Date().toISOString()
       };
 
       setCurrentAppUser(appUserData);
@@ -811,64 +843,116 @@ export default function App() {
             </div>
           )}
 
-          <div className="space-y-3.5">
-            {/* Primary Action: Direct One-Tap Google Account Login for b26215268@gmail.com */}
-            <div className="p-4 bg-gradient-to-r from-blue-50 via-indigo-50 to-sky-50 border-2 border-blue-300 rounded-2xl text-left shadow-2xs">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-blue-700 bg-blue-100 px-2 py-0.5 rounded-md flex items-center gap-1">
-                  <Shield className="w-3.5 h-3.5 text-blue-600" /> Tài khoản chính (Admin)
-                </span>
-                <span className="text-[10px] text-emerald-700 font-semibold bg-emerald-100/80 px-2 py-0.5 rounded-full border border-emerald-300">
-                  ⚡ Không lo lỗi Popup
-                </span>
-              </div>
-              <p className="text-xs text-gray-700 mb-3 leading-relaxed">
-                Đăng nhập tức thì với tài khoản Google <strong className="text-blue-900 font-bold">b26215268@gmail.com</strong> (Kỹ sư Mạnh - Toàn quyền Quản trị viên):
-              </p>
-              <Button 
-                onClick={() => loginWithGoogleDirect('b26215268@gmail.com', 'Kỹ sư Mạnh (Admin)')} 
-                disabled={isLoggingIn}
-                className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold flex items-center justify-center gap-2.5 shadow-sm rounded-xl cursor-pointer transition-all"
-              >
-                <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24">
-                  <path fill="#ffffff" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
-                  <path fill="#ffffff" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
-                  <path fill="#ffffff" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
-                  <path fill="#ffffff" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
-                </svg>
-                {isLoggingIn ? 'Đang mở hệ thống...' : 'Vào hệ thống: b26215268@gmail.com'}
-              </Button>
-            </div>
-
-            <div className="relative py-1 flex items-center justify-center">
-              <div className="border-t border-gray-200 w-full absolute"></div>
-              <span className="bg-white px-3 text-[11px] text-gray-400 font-medium relative uppercase tracking-wider">Hoặc tùy chọn khác</span>
-            </div>
-
-            {/* Option 2: Popup Google OAuth (Standard) */}
+          <div className="space-y-4">
+            {/* Option 1: Popup Google OAuth (Standard Google Login) */}
             <Button 
               onClick={loginWithGooglePopup} 
               variant="outline"
               disabled={isLoggingIn} 
-              className="w-full py-2.5 text-xs sm:text-sm font-semibold border-gray-200 text-gray-700 hover:bg-gray-50 flex items-center justify-center gap-2 rounded-xl transition-all"
+              className="w-full py-3.5 text-sm font-bold border-2 border-gray-200 hover:border-blue-400 text-gray-800 hover:bg-blue-50/50 flex items-center justify-center gap-2.5 rounded-2xl shadow-sm transition-all"
             >
-              <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
+              <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24">
                 <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
                 <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
                 <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
                 <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
               </svg>
-              Mở cửa sổ Popup Google (OAuth)
+              Đăng nhập với Google (OAuth)
             </Button>
 
-            {/* Option 3: Expandable Custom Email Input */}
+            <div className="relative py-1 flex items-center justify-center">
+              <div className="border-t border-gray-200 w-full absolute"></div>
+              <span className="bg-white px-3 text-[11px] text-gray-500 font-semibold relative uppercase tracking-wider">
+                Hoặc vào nhanh theo vai trò mẫu
+              </span>
+            </div>
+
+            {/* Quick 1-Tap Access for the 3 System Roles (Bypasses browser popup blocking) */}
+            <div className="p-3.5 bg-gray-50 border border-gray-200 rounded-2xl text-left space-y-2">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[11px] font-bold text-gray-600 uppercase tracking-wide">
+                  Chọn vai trò đăng nhập trực tiếp:
+                </span>
+                <span className="text-[10px] text-emerald-700 bg-emerald-100 font-bold px-2 py-0.5 rounded-full">
+                  ⚡ Không lo bị out
+                </span>
+              </div>
+
+              {/* 1. Admin */}
+              <button
+                type="button"
+                onClick={() => loginWithGoogleDirect('b26215268@gmail.com', 'Kỹ sư Mạnh (Admin)')}
+                disabled={isLoggingIn}
+                className="w-full p-2.5 bg-white hover:bg-purple-50/70 border border-gray-200 hover:border-purple-300 rounded-xl flex items-center justify-between text-left transition-all shadow-2xs group cursor-pointer"
+              >
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-8 h-8 rounded-lg bg-purple-100 text-purple-700 flex items-center justify-center shrink-0">
+                    <Crown className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="font-bold text-xs text-gray-900 group-hover:text-purple-700 flex items-center gap-1.5">
+                      Quản trị viên (Admin)
+                      <span className="text-[10px] bg-purple-100 text-purple-800 font-bold px-1.5 py-0.2 rounded">Duyệt & Quản trị</span>
+                    </div>
+                    <div className="text-[11px] text-gray-500 truncate">b26215268@gmail.com</div>
+                  </div>
+                </div>
+                <span className="text-xs font-bold text-purple-700 shrink-0 ml-2">Vào →</span>
+              </button>
+
+              {/* 2. Manager */}
+              <button
+                type="button"
+                onClick={() => loginWithGoogleDirect('quanly.telecom@gmail.com', 'Trần Văn Quản (Manager)')}
+                disabled={isLoggingIn}
+                className="w-full p-2.5 bg-white hover:bg-blue-50/70 border border-gray-200 hover:border-blue-300 rounded-xl flex items-center justify-between text-left transition-all shadow-2xs group cursor-pointer"
+              >
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-8 h-8 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center shrink-0">
+                    <Briefcase className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="font-bold text-xs text-gray-900 group-hover:text-blue-700 flex items-center gap-1.5">
+                      Quản lý (Manager)
+                      <span className="text-[10px] bg-blue-100 text-blue-800 font-bold px-1.5 py-0.2 rounded">Kế hoạch & Thống kê</span>
+                    </div>
+                    <div className="text-[11px] text-gray-500 truncate">quanly.telecom@gmail.com</div>
+                  </div>
+                </div>
+                <span className="text-xs font-bold text-blue-700 shrink-0 ml-2">Vào →</span>
+              </button>
+
+              {/* 3. Staff */}
+              <button
+                type="button"
+                onClick={() => loginWithGoogleDirect('kythuat.telecom@gmail.com', 'Nguyễn Kỹ Thuật (Staff)')}
+                disabled={isLoggingIn}
+                className="w-full p-2.5 bg-white hover:bg-emerald-50/70 border border-gray-200 hover:border-emerald-300 rounded-xl flex items-center justify-between text-left transition-all shadow-2xs group cursor-pointer"
+              >
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                    <HardHat className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="font-bold text-xs text-gray-900 group-hover:text-emerald-700 flex items-center gap-1.5">
+                      Kỹ sư hiện trường (Staff)
+                      <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.2 rounded">Lộ trình & Báo cáo</span>
+                    </div>
+                    <div className="text-[11px] text-gray-500 truncate">kythuat.telecom@gmail.com</div>
+                  </div>
+                </div>
+                <span className="text-xs font-bold text-emerald-700 shrink-0 ml-2">Vào →</span>
+              </button>
+            </div>
+
+            {/* Option 3: Custom Gmail Input */}
             {!showCustomLogin ? (
               <button 
                 type="button"
                 onClick={() => setShowCustomLogin(true)}
                 className="text-xs text-blue-600 hover:text-blue-800 font-medium underline cursor-pointer py-1 block mx-auto"
               >
-                + Đăng nhập bằng tài khoản Gmail khác (không cần popup)
+                + Đăng nhập bằng địa chỉ Gmail khác (hoặc gửi yêu cầu đăng ký mới)
               </button>
             ) : (
               <div className="p-3.5 bg-gray-50 border border-gray-200 rounded-2xl text-left space-y-2.5 animate-fadeIn">
@@ -883,7 +967,7 @@ export default function App() {
                   </button>
                 </div>
                 <Input 
-                  placeholder="Ví dụ: kythuat@gmail.com"
+                  placeholder="Ví dụ: nhanvien1@gmail.com"
                   value={customEmail}
                   onChange={(e) => setCustomEmail(e.target.value)}
                   className="bg-white text-xs py-2"
@@ -897,16 +981,19 @@ export default function App() {
                     loginWithGoogleDirect(customEmail.trim());
                   }}
                   disabled={isLoggingIn}
-                  className="w-full py-2 bg-gray-800 hover:bg-black text-white text-xs font-semibold rounded-xl"
+                  className="w-full py-2 bg-gray-900 hover:bg-black text-white text-xs font-semibold rounded-xl"
                 >
                   Xác nhận vào hệ thống
                 </Button>
+                <p className="text-[10px] text-gray-400">
+                  * Nếu email chưa được Admin duyệt trước, tài khoản sẽ được chuyển vào hàng đợi để Quản trị viên kích hoạt.
+                </p>
               </div>
             )}
           </div>
 
-          <div className="mt-6 pt-4 border-t border-gray-100 text-[11px] text-gray-400 text-left space-y-1">
-            <p>💡 <strong>Gợi ý:</strong> Khi dùng trên điện thoại hoặc trình duyệt chặn popup ("bị out ra"), bạn chỉ cần bấm nút xanh <strong>"Vào hệ thống: b26215268@gmail.com"</strong> ở trên để truy cập tức thì.</p>
+          <div className="mt-5 pt-3 border-t border-gray-100 text-[11px] text-gray-400 text-left space-y-1">
+            <p>💡 <strong>Gợi ý:</strong> Khi dùng trên điện thoại hoặc trình duyệt chặn popup, hãy bấm chọn tài khoản <strong>Quản trị viên</strong> hoặc vai trò mẫu ở trên để truy cập tức thì.</p>
           </div>
         </motion.div>
       </div>
@@ -954,6 +1041,27 @@ export default function App() {
             <Button 
               onClick={async () => {
                 try {
+                  const emailLower = activeUser?.email?.toLowerCase();
+                  if (isOwnerEmail(emailLower)) {
+                    const ownerData: AppUser = {
+                      id: activeUser.uid,
+                      email: activeUser.email,
+                      displayName: activeUser.displayName || (emailLower?.includes('votuyen') ? 'Kỹ sư Võ Tuyên (Admin)' : 'Kỹ sư Mạnh (Admin)'),
+                      role: 'admin',
+                      status: 'active',
+                      createdAt: new Date().toISOString(),
+                      updatedAt: new Date().toISOString()
+                    };
+                    try {
+                      await setDoc(doc(db, 'users', activeUser.uid), ownerData, { merge: true });
+                    } catch (dErr) {
+                      console.warn("Could not sync owner doc:", dErr);
+                    }
+                    setCurrentAppUser(ownerData);
+                    alert('🎉 Chào mừng Quản trị viên! Đang mở toàn quyền Quản trị hệ thống...');
+                    return;
+                  }
+
                   const snap = await getDoc(doc(db, 'users', activeUser.uid));
                   if (snap.exists()) {
                     const uData = snap.data() as AppUser;
@@ -963,7 +1071,7 @@ export default function App() {
                     } else if (uData.status === 'blocked') {
                       alert('Tài khoản này đã bị từ chối hoặc tạm khóa.');
                     } else {
-                      alert('Tài khoản vẫn đang ở trạng thái chờ duyệt. Vui lòng liên hệ Quản trị viên (b26215268@gmail.com) để được duyệt nhanh!');
+                      alert('Tài khoản vẫn đang ở trạng thái chờ duyệt. Vui lòng liên hệ Quản trị viên để được duyệt nhanh!');
                     }
                   }
                 } catch (e: any) {
@@ -1150,6 +1258,22 @@ export default function App() {
                 </span>
               )}
 
+              {/* Pending Approval Quick Button for Admins/Managers */}
+              {isActualAdmin && (() => {
+                const pendingCount = (appUsers || []).filter(u => u.status === 'pending' && !isOwnerEmail(u.email)).length;
+                if (pendingCount === 0) return null;
+                return (
+                  <button
+                    onClick={() => setActiveTab('admin')}
+                    className="bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 px-2 py-1 rounded-xl text-xs font-bold flex items-center gap-1.5 animate-pulse cursor-pointer shadow-xs"
+                    title="Có tài khoản mới chờ phê duyệt"
+                  >
+                    <Clock className="w-3.5 h-3.5 text-amber-700" />
+                    <span>{pendingCount} chờ duyệt</span>
+                  </button>
+                );
+              })()}
+
               <span className="text-sm text-gray-500 hidden sm:block truncate max-w-[100px]">{activeUser.displayName || activeUser.email}</span>
               <button onClick={logout} className="p-2 text-gray-400 hover:text-red-600 transition-colors" title="Đăng xuất">
                 <LogOut className="w-5 h-5" />
@@ -1159,11 +1283,34 @@ export default function App() {
         </header>
       )}
 
+      {/* Simulation Notice Banner */}
+      {simulatedRole && (
+        <div className="bg-gradient-to-r from-emerald-800 via-teal-800 to-indigo-900 text-white px-4 py-2.5 text-xs flex items-center justify-between shadow-md relative z-30">
+          <div className="flex items-center gap-2">
+            <span className="bg-white/20 px-2 py-0.5 rounded-md font-bold uppercase tracking-wider text-[10px]">
+              Chế độ xem trước
+            </span>
+            <span>
+              Đang mô phỏng giao diện của:{' '}
+              <strong className="text-amber-300 font-bold underline">
+                {simulatedRole === 'staff' ? '🛠️ Kỹ sư hiện trường (Staff)' : simulatedRole === 'manager' ? '💼 Quản lý (Manager)' : '👑 Quản trị viên (Admin)'}
+              </strong>
+            </span>
+          </div>
+          <button
+            onClick={() => setSimulatedRole(null)}
+            className="bg-white/10 hover:bg-white/20 text-white border border-white/25 font-bold px-2.5 py-1 rounded-lg transition-all text-xs flex items-center gap-1 cursor-pointer"
+          >
+            ✕ Trở về Quản trị viên
+          </button>
+        </div>
+      )}
+
       {/* Main Content */}
       <main className={cn("mx-auto relative", activeTab === 'dashboard' ? "pb-24" : (activeTab === 'planner' || activeTab === 'admin' || activeTab === 'stations') ? "p-3 sm:p-6 pb-24 w-full" : "p-3 sm:p-6 pb-24 max-w-4xl")}>
         {activeTab === 'dashboard' && (
           <DashboardTab 
-            key="dashboard" 
+            key={`dashboard_${effectiveRole}`} 
             stations={campaignFilteredStations.length > 0 ? campaignFilteredStations : stations} 
             reports={reports} 
             assignments={assignments} 
@@ -1199,7 +1346,7 @@ export default function App() {
         )}
         {activeTab === 'planner' && (
           <PlannerTab 
-            key="planner" 
+            key={`planner_${effectiveRole}`} 
             stations={filteredStations} 
             assignments={assignments} 
             appUsers={appUsers} 
@@ -1260,6 +1407,7 @@ export default function App() {
             stations={stations} 
             taskGroups={taskGroups} 
             equipmentDict={equipmentDict} 
+            surveyParameters={surveyParameters}
             currentAppUser={effectiveAppUser} 
             user={activeUser as any} 
           />
@@ -1320,7 +1468,7 @@ export default function App() {
                 active={activeTab === 'admin'} 
                 onClick={() => setActiveTab('admin')} 
                 icon={<Database />} 
-                label="Quản trị" 
+                label={pendingCount > 0 ? `Duyệt (${pendingCount})` : "Quản trị"} 
                 badge={pendingCount > 0 ? pendingCount : undefined}
               />
             );

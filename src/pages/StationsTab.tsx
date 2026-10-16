@@ -7,12 +7,13 @@ import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { Input } from '../components/ui/Input';
 import { cn } from '../lib/utils';
-import { MapPin, Search, Edit2, Trash2, Plus, Upload, X, Map, Activity, CheckCircle2, AlertCircle, ChevronDown, User as UserIcon, Phone, Navigation } from 'lucide-react';
+import { MapPin, Search, Edit2, Trash2, Plus, Upload, X, Map, Activity, CheckCircle2, AlertCircle, ChevronDown, User as UserIcon, Phone, Navigation, Radar, ChevronRight } from 'lucide-react';
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
 import { GoogleGenAI } from "@google/genai";
 import { handleFirestoreError } from '../lib/firebase-utils';
 import { removeVietnameseTones } from '../lib/utils';
+import { StationSectorModal } from '../components/StationSectorModal';
 
 function CustomFieldsEditor({ 
   fields, 
@@ -132,6 +133,7 @@ export function StationsTab({ stations, reports, validationWarnings, setValidati
   const [expandedStationId, setExpandedStationId] = useState<string | null>(null);
   const [showWarningsModal, setShowWarningsModal] = useState(false);
   const [viewingReport, setViewingReport] = useState<Report | null>(null);
+  const [sectorModalStation, setSectorModalStation] = useState<Station | null>(null);
 
   // Upload mapping states
   const [uploadData, setUploadData] = useState<any[]>([]);
@@ -823,6 +825,14 @@ export function StationsTab({ stations, reports, validationWarnings, setValidati
                   </div>
                   <div className="flex items-center gap-0.5 shrink-0 ml-auto -mr-2">
                     <button 
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); setSectorModalStation(station); }}
+                      className="p-2.5 sm:p-2 text-indigo-500 hover:text-indigo-700 transition-colors bg-indigo-50/50 hover:bg-indigo-100 rounded-lg sm:rounded-full ml-1"
+                      title="Sơ đồ Sector & CTCN 100m (QCVN 08)"
+                    >
+                      <Radar className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+                    </button>
+                    <button 
                       onClick={(e) => { e.stopPropagation(); setEditingStation(station); }}
                       className="p-2.5 sm:p-2 text-gray-400 hover:text-blue-600 transition-colors bg-gray-50/50 hover:bg-blue-50 rounded-lg sm:rounded-full ml-1"
                     >
@@ -903,6 +913,29 @@ export function StationsTab({ stations, reports, validationWarnings, setValidati
                               </div>
                             </div>
                           </a>
+
+                          <button 
+                            type="button"
+                            onClick={() => setSectorModalStation(station)}
+                            className="w-full flex items-center justify-between p-3 bg-gradient-to-r from-indigo-50 to-blue-50 hover:from-indigo-100 hover:to-blue-100 border border-indigo-100 transition-colors rounded-lg group text-left"
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 rounded-full bg-indigo-200 flex items-center justify-center text-indigo-700 shrink-0">
+                                <Radar className="w-5 h-5 group-hover:scale-110 transition-transform" />
+                              </div>
+                              <div>
+                                <div className="font-bold text-indigo-950 text-xs sm:text-sm">
+                                  Sơ đồ Sector & CTCN 100m (QCVN 08)
+                                </div>
+                                <div className="text-[11px] text-indigo-700 mt-0.5">
+                                  {station.ctcnList && station.ctcnList.length > 0 
+                                    ? `🔴 Có ${station.ctcnList.length} CTCN trong bán kính 100m • Bắt buộc kiểm định` 
+                                    : `Chưa ghi nhận CTCN trong 100m • Xem & Khảo sát`}
+                                </div>
+                              </div>
+                            </div>
+                            <ChevronRight className="w-4 h-4 text-indigo-500" />
+                          </button>
                         </div>
                       </div>
 
@@ -1024,6 +1057,13 @@ export function StationsTab({ stations, reports, validationWarnings, setValidati
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Station Sector & CTCN Modal (QCVN 08:2022/BTTTT) */}
+      <StationSectorModal
+        station={sectorModalStation}
+        isOpen={Boolean(sectorModalStation)}
+        onClose={() => setSectorModalStation(null)}
+      />
     </motion.div>
   );
 }

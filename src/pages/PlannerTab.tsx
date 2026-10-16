@@ -20,7 +20,8 @@ export function PlannerTab({ stations, assignments, appUsers, user, reports, tas
   const [mapType, setMapType] = useState<MapType>('google');
   
   // Check permissions: Only Admin and Manager (or owner) can plan and assign
-  const isAdminOrManager = isManagerOrAdmin(user?.email, currentAppUser, roles);
+  const isExplicitStaffRole = currentAppUser?.role === 'staff';
+  const isAdminOrManager = !isExplicitStaffRole && (currentAppUser?.role === 'admin' || currentAppUser?.role === 'manager' || isOwnerEmail(user?.email));
 
   // Plan mode: 'month' (for managers/admins) vs 'day' (daily AI route & staff personal route)
   const [planMode, setPlanMode] = useState<'month' | 'day'>(isAdminOrManager ? 'month' : 'day');

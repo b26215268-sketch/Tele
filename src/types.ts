@@ -42,6 +42,41 @@ export interface Campaign {
   createdAt: string;
 }
 
+export interface SectorInfo {
+  id: string; // 'sec-1', 'sec-2', 'sec-3'
+  name: string; // 'Sector 1', 'Sector 2', ...
+  azimuth: number; // Góc hướng búp sóng chính (0 - 360 độ so với Bắc thực)
+  beamwidth: number; // Độ rộng búp sóng ngang 3dB (mặc định 65 độ)
+  antennaHeight?: number; // Chiều cao treo anten (m)
+  tilt?: number; // Góc nghiêng cơ/điện (độ)
+  color?: string; // Mã màu hiển thị dải búp sóng
+}
+
+export interface CtcnObstacle {
+  id: string;
+  name: string; // Tên công trình (VD: "Nhà dân 4 tầng", "Trường THCS", "UBND Xã")
+  buildingType: 'residential' | 'office' | 'school_hospital' | 'commercial' | 'industrial' | 'other';
+  distance: number; // Khoảng cách từ chân cột đến CTCN (mét, <= 100m)
+  azimuth: number; // Góc lệch so với hướng Bắc thực (0 - 360 độ) quan sát từ chân cột
+  latitude?: number; // Tọa độ GPS tính toán
+  longitude?: number;
+  heightMeters?: number; // Chiều cao công trình (m)
+  floors?: number; // Số tầng
+  photoUrl?: string; // Ảnh chụp thực tế hướng nhìn từ chân cột về CTCN
+  notes?: string;
+  // Phân loại hướng quan sát theo QCVN 08 (Tối thiểu 6 vị trí: 3 hướng sector + 3 hướng giữa sector)
+  directionType?: 'sector_main' | 'sector_inter' | 'custom';
+  directionLabel?: string;
+  // Kết quả phân tích búp sóng theo QCVN 08:2022/BTTTT
+  affectedSectorId?: string; // ID sector bị ảnh hưởng
+  affectedSectorName?: string; // Tên sector (VD: Sector 1)
+  offsetAngle: number; // Độ lệch so với búp sóng chính (độ, VD: +12° hoặc -8°)
+  isInMainLobe: boolean; // Có nằm trong búp sóng chính 65° hay không
+  exposureRisk: 'high' | 'medium' | 'low'; // Mức độ nguy cơ phơi nhiễm / điểm đo ưu tiên
+  inspectionPointHeight?: number; // Độ cao điểm đo quy chuẩn (1.0m, 1.5m, 1.7m)
+  createdAt?: string;
+}
+
 export interface Station {
   id: string;
   campaignId?: string;
@@ -61,6 +96,21 @@ export interface Station {
   region?: string;
   tags?: string[];
   networkTypes?: string[];
+  sectors?: SectorInfo[];
+  ctcnList?: CtcnObstacle[];
+  // Dữ liệu khảo sát QCVN 08 & Google Drive
+  surveyResults?: Record<string, any>;
+  surveyStatus?: 'draft' | 'completed';
+  googleDriveFolderUrl?: string; // Thư mục Google Drive theo CSHT
+  surveyPhotos?: {
+    stationPhotoUrl?: string; // 1. Ảnh Nhà trạm (bắt buộc)
+    tallestObstaclePhotoUrl?: string; // 2. Ảnh Công trình cao nhất (bắt buộc)
+    antennaPhotos?: { // 3. Ảnh Anten AT1, AT2, AT3... (tối thiểu 1 ảnh)
+      id: string;
+      name: string;
+      url: string;
+    }[];
+  };
 }
 
 export interface Workspace {
@@ -131,9 +181,12 @@ export interface InfrastructureCheck {
 export interface SurveyParameter {
   id: string;
   label: string;
-  type: 'number' | 'text';
+  type: 'number' | 'text' | 'select';
+  options?: string[]; // Danh sách các lựa chọn nếu type === 'select'
   unit?: string;
   order: number;
+  required?: boolean; // Mặc định false (Tham số không bắt buộc)
+  autoField?: 'tallest_name' | 'tallest_azimuth' | 'tallest_distance' | 'tallest_height' | 'observation_azimuth';
 }
 
 export interface Report {
@@ -157,6 +210,8 @@ export interface Report {
   attachments?: Attachment[]; // 1-Nhiều từ BaoCao đến DinhKem
   history?: ReportHistory[];
   googleDriveUrl?: string; // Link thư mục Google Drive chứa album ảnh chất lượng cao / số lượng lớn
+  sectors?: SectorInfo[]; // Cấu hình Sector khi khảo sát QCVN 08
+  ctcnList?: CtcnObstacle[]; // Danh sách CTCN trong bán kính 100m
 }
 
 export interface Assignment {

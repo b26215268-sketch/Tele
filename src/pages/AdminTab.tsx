@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Database, Settings2, Trash2, ClipboardList, Plus, MapPin, ChevronDown, Crown, Briefcase, HardHat, ShieldCheck, Search, Filter, CheckCircle2, UserPlus, User as UserIcon, Shield, X, Clock, CheckSquare, Square, AlertCircle, Layers } from 'lucide-react';
+import { Database, Settings2, Trash2, ClipboardList, Plus, MapPin, ChevronDown, Crown, Briefcase, HardHat, ShieldCheck, Search, Filter, CheckCircle2, UserPlus, User as UserIcon, Shield, X, Clock, CheckSquare, Square, AlertCircle, Layers, Sparkles, Zap, List, Link2 } from 'lucide-react';
 import { collection, addDoc, updateDoc, doc, deleteDoc, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { EquipmentDict, TaskGroup, Workspace, SurveyParameter, Station, Report, ValidationWarning, Campaign, AppUser, APP_PERMISSIONS, AppRole } from '../types';
@@ -57,10 +57,15 @@ export function AdminTab({ equipmentDict, taskGroups, workspaces, surveyParamete
 
   // Survey Parameter States
   const [newSurveyLabel, setNewSurveyLabel] = useState('');
-  const [newSurveyType, setNewSurveyType] = useState<'number' | 'text'>('text');
+  const [newSurveyType, setNewSurveyType] = useState<'number' | 'text' | 'select'>('text');
   const [newSurveyUnit, setNewSurveyUnit] = useState('');
+  const [newSurveyOptions, setNewSurveyOptions] = useState('');
+  const [newSurveyRequired, setNewSurveyRequired] = useState(false); // Tham số không bắt buộc theo mặc định
+  const [newSurveyAutoField, setNewSurveyAutoField] = useState<string>('');
   const [isAddingSurveyParam, setIsAddingSurveyParam] = useState(false);
   const [editingSurveyParam, setEditingSurveyParam] = useState<SurveyParameter | null>(null);
+  const [editingSurveyOptionsStr, setEditingSurveyOptionsStr] = useState('');
+  const [isSeedingParams, setIsSeedingParams] = useState(false);
 
   // Check pending users count
   const pendingUsersCount = (appUsers || []).filter(u => u.status === 'pending' && !isOwnerEmail(u.email)).length;
@@ -380,17 +385,27 @@ export function AdminTab({ equipmentDict, taskGroups, workspaces, surveyParamete
 
   // --- Survey Parameter Handlers ---
   const handleAddSurveyParam = async () => {
-    if (!newSurveyLabel) return;
+    if (!newSurveyLabel.trim()) return;
     try {
+      const parsedOptions = newSurveyType === 'select' 
+        ? newSurveyOptions.split(/[,;\n]+/).map(s => s.trim()).filter(Boolean)
+        : undefined;
+
       await addDoc(collection(db, 'survey_parameters'), {
-        label: newSurveyLabel,
+        label: newSurveyLabel.trim(),
         type: newSurveyType,
-        unit: newSurveyUnit,
+        unit: newSurveyUnit.trim() || undefined,
+        options: parsedOptions && parsedOptions.length > 0 ? parsedOptions : undefined,
+        required: newSurveyRequired, // Tham số không bắt buộc: false
+        autoField: newSurveyAutoField || undefined,
         order: surveyParameters.length
       });
       setNewSurveyLabel('');
       setNewSurveyType('text');
       setNewSurveyUnit('');
+      setNewSurveyOptions('');
+      setNewSurveyRequired(false);
+      setNewSurveyAutoField('');
       setIsAddingSurveyParam(false);
     } catch (e) {
       console.error("Lỗi thêm thông số khảo sát:", e);
@@ -398,17 +413,131 @@ export function AdminTab({ equipmentDict, taskGroups, workspaces, surveyParamete
   };
 
   const handleUpdateSurveyParam = async () => {
-    if (!editingSurveyParam || !editingSurveyParam.label) return;
+    if (!editingSurveyParam || !editingSurveyParam.label.trim()) return;
     try {
+      const parsedOptions = editingSurveyParam.type === 'select'
+        ? editingSurveyOptionsStr.split(/[,;\n]+/).map(s => s.trim()).filter(Boolean)
+        : undefined;
+
       await updateDoc(doc(db, 'survey_parameters', editingSurveyParam.id), {
-        label: editingSurveyParam.label,
+        label: editingSurveyParam.label.trim(),
         type: editingSurveyParam.type,
-        unit: editingSurveyParam.unit,
-        order: editingSurveyParam.order
+        unit: editingSurveyParam.unit?.trim() || undefined,
+        options: parsedOptions && parsedOptions.length > 0 ? parsedOptions : (editingSurveyParam.options || undefined),
+        required: editingSurveyParam.required || false,
+        autoField: editingSurveyParam.autoField || undefined,
+        order: editingSurveyParam.order ?? 0
       });
       setEditingSurveyParam(null);
+      setEditingSurveyOptionsStr('');
     } catch (e) {
       console.error("Lỗi cập nhật thông số khảo sát:", e);
+    }
+  };
+
+  const handleSeedQcvn08Params = async () => {
+    setIsSeedingParams(true);
+    try {
+      const qcvn08StandardParams: Omit<SurveyParameter, 'id'>[] = [
+        {
+          label: 'Loại trụ anten',
+          type: 'select',
+          options: ['Trụ tự đứng', 'Trụ dây níu', 'Cột Monopole', 'Cột ngụy trang', 'Cột trên mái nhà', 'Cột tích hợp đèn chiếu sáng', 'Khác'],
+          order: 0,
+          required: false
+        },
+        {
+          label: 'Vị trí đặt cột anten',
+          type: 'select',
+          options: ['Trên mặt đất', 'Trên mái nhà dân', 'Trên nóc tòa nhà cơ quan/chung cư', 'Trên đồi núi', 'Khác'],
+          order: 1,
+          required: false
+        },
+        {
+          label: 'Quang cảnh xung quanh nhà đặt trạm',
+          type: 'select',
+          options: ['Khu dân cư đông đúc', 'Đồng bằng / nông thôn', 'Ven biển', 'Khu công nghiệp', 'Vùng đồi núi', 'Rừng cây rậm rạp'],
+          order: 2,
+          required: false
+        },
+        {
+          label: 'Góc phương vị của hướng quan sát',
+          type: 'number',
+          unit: '°',
+          order: 3,
+          required: false,
+          autoField: 'observation_azimuth'
+        },
+        {
+          label: 'Tên công trình cao nhất trong 100m',
+          type: 'text',
+          order: 4,
+          required: false,
+          autoField: 'tallest_name'
+        },
+        {
+          label: 'Góc phương vị của công trình cao nhất',
+          type: 'number',
+          unit: '°',
+          order: 5,
+          required: false,
+          autoField: 'tallest_azimuth'
+        },
+        {
+          label: 'Khoảng cách từ cột anten tới công trình cao nhất',
+          type: 'number',
+          unit: 'm',
+          order: 6,
+          required: false,
+          autoField: 'tallest_distance'
+        },
+        {
+          label: 'Độ cao của công trình cao nhất',
+          type: 'number',
+          unit: 'm',
+          order: 7,
+          required: false,
+          autoField: 'tallest_height'
+        },
+        {
+          label: 'Độ cao nhà đặt cột',
+          type: 'number',
+          unit: 'm',
+          order: 8,
+          required: false
+        },
+        {
+          label: 'Độ cao cột anten',
+          type: 'number',
+          unit: 'm',
+          order: 9,
+          required: false
+        },
+        {
+          label: 'Độ cao đồi đặt cột',
+          type: 'number',
+          unit: 'm',
+          order: 10,
+          required: false
+        }
+      ];
+
+      let addedCount = 0;
+      for (const p of qcvn08StandardParams) {
+        const exists = surveyParameters.some(sp => sp.label.trim().toLowerCase() === p.label.trim().toLowerCase());
+        if (!exists) {
+          await addDoc(collection(db, 'survey_parameters'), p);
+          addedCount++;
+        }
+      }
+      alert(addedCount > 0 
+        ? `Đã nạp thành công ${addedCount} thông số chuẩn QCVN 08 (Tất cả tham số đều Không bắt buộc)!`
+        : 'Tất cả 11 thông số chuẩn QCVN 08 đã có sẵn trong hệ thống.');
+    } catch (e: any) {
+      console.error("Lỗi nạp tham số QCVN 08:", e);
+      alert(`Lỗi nạp tham số: ${e.message}`);
+    } finally {
+      setIsSeedingParams(false);
     }
   };
 
@@ -728,70 +857,239 @@ export function AdminTab({ equipmentDict, taskGroups, workspaces, surveyParamete
           {/* TAB: SURVEY PARAMETERS */}
           {activeConfigTab === 'survey' && (
             <div className="space-y-4">
-              <div className="flex flex-row justify-between items-center bg-blue-50/50 p-3 rounded-lg border border-blue-100 gap-3">
-                <div className="text-sm font-medium text-gray-700">Thông số kĩ thuật cần khảo sát</div>
-                <Button className="whitespace-nowrap shrink-0 px-3 py-1.5 text-sm" onClick={() => setIsAddingSurveyParam(!isAddingSurveyParam)}>
-                  {isAddingSurveyParam ? 'Hủy' : '+ Thêm thông số'}
-                </Button>
+              <div className="flex flex-col sm:flex-row justify-between sm:items-center bg-blue-50/70 p-4 rounded-xl border border-blue-100 gap-3">
+                <div>
+                  <div className="text-sm font-bold text-blue-950 flex items-center gap-2">
+                    <ClipboardList className="w-4 h-4 text-blue-600" />
+                    Bộ Thông số Khảo sát Hạ tầng & Anten (QCVN 08)
+                  </div>
+                  <p className="text-xs text-blue-700 mt-0.5">
+                    Quản trị viên cấu hình động các thông số hạ tầng. Mặc định các <strong>tham số không bắt buộc</strong> giúp kỹ sư linh hoạt khi đo kiểm hiện trường.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    disabled={isSeedingParams}
+                    onClick={handleSeedQcvn08Params}
+                    className="border-blue-300 text-blue-700 hover:bg-blue-100 flex items-center gap-1.5 text-xs font-semibold shadow-xs"
+                  >
+                    <Zap className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
+                    <span>{isSeedingParams ? 'Đang nạp...' : '⚡ Nạp 11 thông số QCVN 08'}</span>
+                  </Button>
+                  <Button 
+                    className="whitespace-nowrap shrink-0 px-3 py-1.5 text-xs font-semibold" 
+                    onClick={() => setIsAddingSurveyParam(!isAddingSurveyParam)}
+                  >
+                    {isAddingSurveyParam ? 'Đóng' : '+ Thêm thông số'}
+                  </Button>
+                </div>
               </div>
 
               <AnimatePresence>
                 {isAddingSurveyParam && (
-                  <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="p-4 border rounded-lg bg-gray-50 space-y-4 overflow-hidden">
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                      <div className="sm:col-span-1">
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Tên thông số (Label)</label>
-                        <Input value={newSurveyLabel} onChange={(e: any) => setNewSurveyLabel(e.target.value)} placeholder="VD: Hướng Sector 1" />
+                  <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="p-4 border rounded-xl bg-slate-50 space-y-4 overflow-hidden shadow-xs">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+                      <div className="sm:col-span-2">
+                        <label className="block text-xs font-bold text-gray-700 mb-1">Tên thông số (Nhãn)</label>
+                        <Input value={newSurveyLabel} onChange={(e: any) => setNewSurveyLabel(e.target.value)} placeholder="VD: Loại trụ anten, Góc quan sát..." />
                       </div>
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Kiểu dữ liệu</label>
-                        <select className="w-full border p-1.5 rounded-md text-sm border-gray-200 h-10 bg-white" value={newSurveyType} onChange={(e: any) => setNewSurveyType(e.target.value)}>
+                        <label className="block text-xs font-bold text-gray-700 mb-1">Kiểu dữ liệu</label>
+                        <select className="w-full border p-1.5 rounded-md text-xs border-gray-300 h-10 bg-white font-medium" value={newSurveyType} onChange={(e: any) => setNewSurveyType(e.target.value)}>
                           <option value="text">Văn bản (Text)</option>
                           <option value="number">Số (Number)</option>
+                          <option value="select">Danh sách chọn (Dropdown)</option>
                         </select>
                       </div>
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Đơn vị (Không bắt buộc)</label>
-                        <Input value={newSurveyUnit} onChange={(e: any) => setNewSurveyUnit(e.target.value)} placeholder="VD: m, độ, tầng..." />
+                        <label className="block text-xs font-bold text-gray-700 mb-1">Đơn vị đo (m, °, tầng...)</label>
+                        <Input value={newSurveyUnit} onChange={(e: any) => setNewSurveyUnit(e.target.value)} placeholder="Tùy chọn: m, °..." />
                       </div>
                     </div>
-                    <Button onClick={handleAddSurveyParam} className="w-full">Lưu thông số khảo sát mới</Button>
+
+                    {newSurveyType === 'select' && (
+                      <div className="bg-white p-3 rounded-lg border border-slate-200">
+                        <label className="block text-xs font-bold text-blue-900 mb-1">
+                          Các lựa chọn danh sách (phân cách bằng dấu phẩy)
+                        </label>
+                        <Input 
+                          value={newSurveyOptions} 
+                          onChange={(e: any) => setNewSurveyOptions(e.target.value)} 
+                          placeholder="VD: Trụ tự đứng, Trụ dây níu, Cột Monopole, Cột ngụy trang, Khác" 
+                        />
+                        <p className="text-[11px] text-slate-500 mt-1 italic">
+                          Kỹ sư sẽ chọn từ danh sách dropdown này trên biểu mẫu khảo sát.
+                        </p>
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700 mb-1">Liên kết tự động (Auto-fill)</label>
+                        <select 
+                          className="w-full border p-1.5 rounded-md text-xs border-gray-300 h-9 bg-white"
+                          value={newSurveyAutoField}
+                          onChange={(e: any) => setNewSurveyAutoField(e.target.value)}
+                        >
+                          <option value="">-- Không liên kết tự động --</option>
+                          <option value="tallest_name">Tên công trình cao nhất (CTCN)</option>
+                          <option value="tallest_azimuth">Góc phương vị công trình cao nhất (°)</option>
+                          <option value="tallest_distance">Khoảng cách tới công trình cao nhất (m)</option>
+                          <option value="tallest_height">Độ cao công trình cao nhất (m)</option>
+                          <option value="observation_azimuth">Góc phương vị hướng quan sát (°)</option>
+                        </select>
+                      </div>
+                      <div className="flex items-center gap-2 pt-5">
+                        <label className="flex items-center gap-2 cursor-pointer select-none">
+                          <input 
+                            type="checkbox" 
+                            checked={newSurveyRequired} 
+                            onChange={(e) => setNewSurveyRequired(e.target.checked)}
+                            className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 border-gray-300"
+                          />
+                          <span className="text-xs font-semibold text-gray-700">Bắt buộc nhập</span>
+                        </label>
+                        <span className="text-[11px] text-gray-500 italic">(Mặc định là không bắt buộc)</span>
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end gap-2 pt-2">
+                      <Button variant="ghost" size="sm" onClick={() => setIsAddingSurveyParam(false)}>Hủy</Button>
+                      <Button size="sm" onClick={handleAddSurveyParam} className="bg-blue-600 hover:bg-blue-700 text-white">Lưu thông số mới</Button>
+                    </div>
                   </motion.div>
                 )}
               </AnimatePresence>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 {surveyParameters.map(param => (
-                  <div key={param.id} className="border border-gray-200 p-3 rounded-lg hover:shadow-sm transition-all bg-white relative group">
+                  <div key={param.id} className="border border-gray-200 p-3.5 rounded-xl hover:shadow-sm transition-all bg-white relative group flex flex-col justify-between">
                     {editingSurveyParam?.id === param.id ? (
                       <div className="space-y-3">
-                        <Input value={editingSurveyParam.label} onChange={(e: any) => setEditingSurveyParam({...editingSurveyParam, label: e.target.value})} className="h-8 text-sm" placeholder="Tên" />
-                        <div className="flex gap-2">
-                          <select className="flex-1 border p-1 rounded-md text-xs border-gray-200 h-8" value={editingSurveyParam.type} onChange={(e: any) => setEditingSurveyParam({...editingSurveyParam, type: e.target.value as any})}>
-                            <option value="text">Text</option>
-                            <option value="number">Number</option>
-                          </select>
-                          <Input value={editingSurveyParam.unit || ''} onChange={(e: any) => setEditingSurveyParam({...editingSurveyParam, unit: e.target.value})} placeholder="Đơn vị" className="w-20 h-8 text-xs" />
+                        <div>
+                          <label className="text-[10px] font-bold text-gray-500 uppercase">Tên nhãn</label>
+                          <Input value={editingSurveyParam.label} onChange={(e: any) => setEditingSurveyParam({...editingSurveyParam, label: e.target.value})} className="h-8 text-xs font-semibold" placeholder="Tên" />
                         </div>
-                        <div className="flex gap-2">
-                          <Button size="sm" onClick={handleUpdateSurveyParam} className="w-full h-8 text-xs">Lưu</Button>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="text-[10px] font-bold text-gray-500 uppercase">Kiểu</label>
+                            <select className="w-full border p-1 rounded-md text-xs border-gray-300 h-8 bg-white" value={editingSurveyParam.type} onChange={(e: any) => setEditingSurveyParam({...editingSurveyParam, type: e.target.value as any})}>
+                              <option value="text">Text</option>
+                              <option value="number">Number</option>
+                              <option value="select">Select (Dropdown)</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="text-[10px] font-bold text-gray-500 uppercase">Đơn vị</label>
+                            <Input value={editingSurveyParam.unit || ''} onChange={(e: any) => setEditingSurveyParam({...editingSurveyParam, unit: e.target.value})} placeholder="Đơn vị" className="h-8 text-xs" />
+                          </div>
+                        </div>
+
+                        {editingSurveyParam.type === 'select' && (
+                          <div>
+                            <label className="text-[10px] font-bold text-gray-500 uppercase">Tùy chọn (cách nhau dấu phẩy)</label>
+                            <Input 
+                              value={editingSurveyOptionsStr} 
+                              onChange={(e: any) => setEditingSurveyOptionsStr(e.target.value)} 
+                              placeholder="Lựa chọn 1, Lựa chọn 2..." 
+                              className="h-8 text-xs"
+                            />
+                          </div>
+                        )}
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="text-[10px] font-bold text-gray-500 uppercase">Liên kết</label>
+                            <select 
+                              className="w-full border p-1 rounded-md text-xs border-gray-300 h-8 bg-white"
+                              value={editingSurveyParam.autoField || ''}
+                              onChange={(e: any) => setEditingSurveyParam({...editingSurveyParam, autoField: e.target.value || undefined})}
+                            >
+                              <option value="">Không</option>
+                              <option value="tallest_name">Tên CTCN cao nhất</option>
+                              <option value="tallest_azimuth">Góc CTCN</option>
+                              <option value="tallest_distance">Cự ly CTCN</option>
+                              <option value="tallest_height">Cao độ CTCN</option>
+                              <option value="observation_azimuth">Hướng quan sát</option>
+                            </select>
+                          </div>
+                          <div className="flex items-center gap-1.5 pt-4">
+                            <input 
+                              type="checkbox" 
+                              id={`req-${param.id}`}
+                              checked={!!editingSurveyParam.required}
+                              onChange={(e) => setEditingSurveyParam({...editingSurveyParam, required: e.target.checked})}
+                              className="w-3.5 h-3.5 rounded text-blue-600"
+                            />
+                            <label htmlFor={`req-${param.id}`} className="text-[11px] font-semibold text-gray-700 cursor-pointer">Bắt buộc</label>
+                          </div>
+                        </div>
+
+                        <div className="flex gap-2 pt-1">
+                          <Button size="sm" onClick={handleUpdateSurveyParam} className="w-full h-8 text-xs bg-blue-600 hover:bg-blue-700 text-white">Lưu</Button>
                           <Button size="sm" variant="secondary" onClick={() => setEditingSurveyParam(null)} className="w-full h-8 text-xs">Hủy</Button>
                         </div>
                       </div>
                     ) : (
                       <>
                         <div className="pr-14">
-                          <div className="font-bold text-gray-900 text-sm">{param.label}</div>
-                          <div className="flex gap-2 mt-1.5">
-                            <span className="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded border uppercase">{param.type}</span>
-                            {param.unit && <span className="text-[10px] bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded border">Đơn vị: {param.unit}</span>}
+                          <div className="font-bold text-gray-900 text-sm leading-snug">{param.label}</div>
+                          <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                            <span className="text-[10px] bg-slate-100 text-slate-700 font-semibold px-1.5 py-0.5 rounded border border-slate-200 uppercase">
+                              {param.type === 'select' ? 'Dropdown' : param.type}
+                            </span>
+                            {param.unit && (
+                              <span className="text-[10px] bg-blue-50 text-blue-700 font-semibold px-1.5 py-0.5 rounded border border-blue-200">
+                                ĐV: {param.unit}
+                              </span>
+                            )}
+                            <span className={cn(
+                              "text-[10px] font-semibold px-1.5 py-0.5 rounded border",
+                              param.required 
+                                ? "bg-red-50 text-red-700 border-red-200" 
+                                : "bg-emerald-50 text-emerald-700 border-emerald-200"
+                            )}>
+                              {param.required ? 'Bắt buộc' : 'Không bắt buộc'}
+                            </span>
                           </div>
+
+                          {param.type === 'select' && param.options && param.options.length > 0 && (
+                            <div className="mt-2 text-[11px] text-slate-500 line-clamp-2 bg-slate-50 p-1.5 rounded border border-slate-100">
+                              <span className="font-semibold text-slate-700">Tùy chọn:</span> {param.options.join(', ')}
+                            </div>
+                          )}
+
+                          {param.autoField && (
+                            <div className="mt-2 text-[11px] text-blue-700 bg-blue-50/80 px-2 py-0.5 rounded border border-blue-100 flex items-center gap-1 font-medium">
+                              <Link2 className="w-3 h-3 shrink-0" />
+                              <span>Liên kết: {
+                                param.autoField === 'tallest_name' ? 'Tên CTCN cao nhất' :
+                                param.autoField === 'tallest_azimuth' ? 'Góc CTCN cao nhất' :
+                                param.autoField === 'tallest_distance' ? 'Cự ly CTCN cao nhất' :
+                                param.autoField === 'tallest_height' ? 'Cao độ CTCN cao nhất' :
+                                'Hướng quan sát'
+                              }</span>
+                            </div>
+                          )}
                         </div>
-                        <div className="absolute top-2 right-2 flex opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button onClick={() => setEditingSurveyParam(param)} className="p-1.5 text-gray-400 hover:text-blue-600 rounded">
+                        <div className="absolute top-2.5 right-2.5 flex opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button 
+                            onClick={() => {
+                              setEditingSurveyParam(param);
+                              setEditingSurveyOptionsStr(param.options ? param.options.join(', ') : '');
+                            }} 
+                            className="p-1.5 text-gray-400 hover:text-blue-600 rounded bg-gray-50 hover:bg-blue-50"
+                            title="Sửa thông số"
+                          >
                             <Settings2 className="w-3.5 h-3.5" />
                           </button>
-                          <button onClick={() => handleDeleteSurveyParam(param.id)} className="p-1.5 text-gray-400 hover:text-red-600 rounded">
+                          <button 
+                            onClick={() => handleDeleteSurveyParam(param.id)} 
+                            className="p-1.5 text-gray-400 hover:text-red-600 rounded bg-gray-50 hover:bg-red-50 ml-1"
+                            title="Xóa thông số"
+                          >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         </div>
@@ -800,10 +1098,21 @@ export function AdminTab({ equipmentDict, taskGroups, workspaces, surveyParamete
                   </div>
                 ))}
                 {surveyParameters.length === 0 && !isAddingSurveyParam && (
-                  <div className="col-span-full py-12 text-center border-2 border-dashed rounded-xl border-gray-200 bg-gray-50/50">
-                    <ClipboardList className="w-10 h-10 text-gray-300 mx-auto mb-2" />
-                    <p className="text-gray-500 text-sm">Chưa có thông số khảo sát nào được thiết lập.</p>
-                    <button onClick={() => setIsAddingSurveyParam(true)} className="text-blue-600 text-sm font-semibold mt-2 hover:underline">Bắt đầu thiết lập biểu mẫu</button>
+                  <div className="col-span-full py-12 text-center border-2 border-dashed rounded-xl border-gray-200 bg-gray-50/50 space-y-3">
+                    <ClipboardList className="w-10 h-10 text-gray-300 mx-auto" />
+                    <div>
+                      <p className="text-gray-700 font-semibold text-sm">Chưa có thông số khảo sát nào được thiết lập.</p>
+                      <p className="text-gray-500 text-xs mt-1">Bạn có thể nạp ngay bộ thông số chuẩn QCVN 08 hoặc tự thiết lập mới.</p>
+                    </div>
+                    <div className="flex items-center justify-center gap-2 pt-2">
+                      <Button size="sm" onClick={handleSeedQcvn08Params} disabled={isSeedingParams} className="bg-blue-600 hover:bg-blue-700 text-white flex items-center gap-1.5 text-xs">
+                        <Zap className="w-3.5 h-3.5 text-amber-300 fill-amber-300" />
+                        <span>⚡ Nạp ngay 11 thông số chuẩn QCVN 08</span>
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={() => setIsAddingSurveyParam(true)} className="text-xs">
+                        + Thêm thông số tùy chỉnh
+                      </Button>
+                    </div>
                   </div>
                 )}
               </div>

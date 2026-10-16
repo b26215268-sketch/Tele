@@ -4,15 +4,17 @@ import { ref, uploadString, getDownloadURL } from 'firebase/storage';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format, parseISO } from 'date-fns';
 import { db, storage } from '../firebase';
-import { Station, EquipmentDict, TaskGroup, Workspace, Report, ReportDetail, InfrastructureCheck, Attachment, SurveyParameter, Assignment, AppUser } from '../types';
+import { Station, EquipmentDict, TaskGroup, Workspace, Report, ReportDetail, InfrastructureCheck, Attachment, SurveyParameter, Assignment, AppUser, SectorInfo, CtcnObstacle } from '../types';
 import { User } from 'firebase/auth';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { Input } from '../components/ui/Input';
 import { cn } from '../lib/utils';
-import { FileText, Save, CheckCircle, Image as ImageIcon, MessageSquare, X, ChevronDown, ChevronRight, Check, ClipboardList, Search, Settings2, Trash2, Home, Cloud, Plus, History, MapPin, Clock, ShieldCheck, Briefcase, FolderUp, ExternalLink } from 'lucide-react';
+import { FileText, Save, CheckCircle, Image as ImageIcon, MessageSquare, X, ChevronDown, ChevronRight, Check, ClipboardList, Search, Settings2, Trash2, Home, Cloud, Plus, History, MapPin, Clock, ShieldCheck, Briefcase, FolderUp, ExternalLink, Radar, Zap } from 'lucide-react';
 import { handleFirestoreError } from '../lib/firebase-utils';
 import { removeVietnameseTones } from '../lib/utils';
+import { SectorRadar100m } from '../components/SectorRadar100m';
+import { getDefaultSectors } from '../lib/telecomGeo';
 
 export function ReportsTab({
   stations,
@@ -187,6 +189,70 @@ export function ReportsTab({
   });
   
   const [surveyResults, setSurveyResults] = useState<Record<string, any>>({});
+  const [surveySectors, setSurveySectors] = useState<SectorInfo[]>([]);
+  const [surveyCtcnList, setSurveyCtcnList] = useState<CtcnObstacle[]>([]);
+
+  // Sync surveySectors and surveyCtcnList when station changes
+  useEffect(() => {
+    const activeSt = stations.find(s => s.id === stationId);
+    if (activeSt) {
+      if (activeSt.sectors && activeSt.sectors.length > 0) {
+        setSurveySectors(activeSt.sectors);
+      } else {
+        setSurveySectors(getDefaultSectors());
+      }
+      if (activeSt.ctcnList && activeSt.ctcnList.length > 0) {
+        setSurveyCtcnList(activeSt.ctcnList);
+      } else {
+        setSurveyCtcnList([]);
+      }
+    }
+  }, [stationId, stations]);
+
+  const handleAutoFillFromTallestCtcn = () => {
+    if (!surveyCtcnList || surveyCtcnList.length === 0) {
+      setToastMessage({ message: 'Chưa có công trình nào trong sơ đồ CTCN 100m để lấy thông số', type: 'error' });
+      setTimeout(() => setToastMessage(null), 3500);
+      return;
+    }
+
+    // Sort by height descending
+    const tallest = [...surveyCtcnList].sort((a, b) => (b.heightMeters || 0) - (a.heightMeters || 0))[0];
+    if (!tallest) return;
+
+    const updated = { ...surveyResults };
+    let filledCount = 0;
+
+    surveyParameters.forEach(param => {
+      const labelLower = (param.label || '').toLowerCase();
+      
+      if (param.autoField === 'tallest_name' || labelLower.includes('tên công trình cao nhất')) {
+        updated[param.id] = tallest.name;
+        filledCount++;
+      } else if (param.autoField === 'tallest_azimuth' || (labelLower.includes('công trình cao nhất') && (labelLower.includes('phương vị') || labelLower.includes('góc')))) {
+        updated[param.id] = tallest.azimuth;
+        filledCount++;
+      } else if (param.autoField === 'tallest_distance' || (labelLower.includes('công trình cao nhất') && (labelLower.includes('khoảng cách') || labelLower.includes('cự ly')))) {
+        updated[param.id] = Math.round(tallest.distance);
+        filledCount++;
+      } else if (param.autoField === 'tallest_height' || (labelLower.includes('công trình cao nhất') && (labelLower.includes('độ cao') || labelLower.includes('chiều cao')))) {
+        updated[param.id] = tallest.heightMeters || (tallest.floors ? tallest.floors * 3.5 : 10);
+        filledCount++;
+      } else if (param.autoField === 'observation_azimuth' || (labelLower.includes('hướng quan sát') && (labelLower.includes('phương vị') || labelLower.includes('góc')))) {
+        if (!updated[param.id]) {
+          updated[param.id] = tallest.azimuth;
+          filledCount++;
+        }
+      }
+    });
+
+    setSurveyResults(updated);
+    setToastMessage({ 
+      message: `Đã điền tự động từ CTCN cao nhất: "${tallest.name}" (Cao ${tallest.heightMeters || 0}m, cách ${Math.round(tallest.distance)}m, hướng ${tallest.azimuth}°)!`, 
+      type: 'success' 
+    });
+    setTimeout(() => setToastMessage(null), 4000);
+  };
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{current: number, total: number}>({current: 0, total: 0});
@@ -334,7 +400,7 @@ export function ReportsTab({
   }, []);
 
   const sortedSurveyParameters = useMemo(() => {
-    return [...surveyParameters].sort((a, b) => a.label.localeCompare(b.label, 'vi'));
+    return [...surveyParameters].sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.label.localeCompare(b.label, 'vi'));
   }, [surveyParameters]);
 
   const filteredStations = useMemo(() => {
@@ -481,6 +547,8 @@ export function ReportsTab({
         googleDriveUrl: googleDriveUrl.trim() || undefined,
         surveyResults: showInfraModule ? surveyResults : {},
         infrastructureCheck: infraCheck,
+        sectors: surveySectors.length > 0 ? surveySectors : undefined,
+        ctcnList: surveyCtcnList.length > 0 ? surveyCtcnList : undefined,
         status: 'completed',
         createdAt: now,
         completedAt: now,
@@ -507,11 +575,15 @@ export function ReportsTab({
         }
       }
 
-      // Auto-update station status to "checked" when a report is created
-      if (selectedStation && selectedStation.status !== 'checked') {
-        await updateDoc(doc(db, 'stations', finalStationId), {
+      // Auto-update station status to "checked" and sync sectors/CTCN when a report is created
+      if (selectedStation) {
+        const stationUpdatePayload: any = {
           status: 'checked'
-        });
+        };
+        if (surveySectors.length > 0) stationUpdatePayload.sectors = surveySectors;
+        if (surveyCtcnList.length > 0) stationUpdatePayload.ctcnList = surveyCtcnList;
+
+        await updateDoc(doc(db, 'stations', finalStationId), stationUpdatePayload);
       }
 
       // Add to audit_logs
@@ -541,9 +613,11 @@ export function ReportsTab({
     }
   };
 
+  const currentSelectedStation = useMemo(() => stations.find(s => s.id === stationId) || null, [stations, stationId]);
   const showInfraModule = taskGroupId && selectedTaskGroup?.modules?.includes('INFRASTRUCTURE');
   const isEquipmentConfigured = taskGroupId ? (selectedTaskGroup?.modules?.includes('EQUIPMENT') ?? (selectedTaskGroup?.requiresEquipment !== false)) : false;
   const showEquipmentDetails = isEquipmentConfigured && !isNoMaterial;
+  const hasStep2Content = showEquipmentDetails || showInfraModule || Boolean(currentSelectedStation);
 
   return (
     <motion.div 
@@ -553,7 +627,7 @@ export function ReportsTab({
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-xl font-bold text-gray-900">Thực hiện Công việc</h2>
         <div className="text-sm font-medium text-gray-500 bg-gray-100 px-3 py-1 rounded-full">
-          Bước {currentStep} / {showEquipmentDetails || showInfraModule ? '3' : '2'}
+          Bước {currentStep} / {hasStep2Content ? '3' : '2'}
         </div>
       </div>
 
@@ -561,7 +635,7 @@ export function ReportsTab({
       <div className="w-full bg-gray-200 h-2 rounded-full overflow-hidden mb-6">
         <div 
           className="bg-blue-600 h-full transition-all duration-300" 
-          style={{ width: `${(currentStep / (showEquipmentDetails || showInfraModule ? 3 : 2)) * 100}%` }}
+          style={{ width: `${(currentStep / (hasStep2Content ? 3 : 2)) * 100}%` }}
         />
       </div>
 
@@ -728,7 +802,7 @@ export function ReportsTab({
                     setTimeout(() => setToastMessage(null), 3000);
                     return;
                   }
-                  if (showEquipmentDetails || showInfraModule) {
+                  if (hasStep2Content) {
                      setCurrentStep(2);
                   } else {
                      setCurrentStep(3); // Skip straight to final step if no Details/Survey needed
@@ -742,8 +816,8 @@ export function ReportsTab({
           </motion.div>
         )}
 
-        {/* STEP 2: DETAILS OR SURVEY */}
-        {currentStep === 2 && (showEquipmentDetails || showInfraModule) && (
+        {/* STEP 2: DETAILS, SECTORS & SURVEY */}
+        {currentStep === 2 && hasStep2Content && (
           <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} className="p-4 sm:p-6 space-y-6">
             <div className="space-y-2">
               <h3 className="font-bold text-blue-900 flex items-center gap-2 text-lg">
@@ -755,26 +829,73 @@ export function ReportsTab({
             {/* Dynamic Survey Form (Survey Parameters) */}
             {showInfraModule && surveyParameters.length > 0 && (
               <div className="space-y-4 px-4 sm:px-6 pt-4 border border-blue-100 bg-[#f8fafc] rounded-xl pb-6 shadow-sm">
-                <h3 className="font-bold text-blue-800 flex items-center gap-2 border-b border-blue-100 pb-2 mb-4">
-                  <ClipboardList className="w-5 h-5 text-blue-600" /> Khảo sát Thông số trạm
-                </h3>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-blue-100 pb-3 mb-4">
+                  <div>
+                    <h3 className="font-bold text-blue-900 flex items-center gap-2 text-base">
+                      <ClipboardList className="w-5 h-5 text-blue-600" /> Khảo sát Thông số trạm & Anten
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Tất cả các tham số dưới đây là <strong>không bắt buộc</strong>, kỹ sư có thể điền theo số liệu đo đạc thực tế tại hiện trường.
+                    </p>
+                  </div>
+                  {surveyCtcnList.length > 0 && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={handleAutoFillFromTallestCtcn}
+                      className="bg-amber-50 border-amber-300 text-amber-900 hover:bg-amber-100 flex items-center gap-1.5 text-xs font-bold shadow-xs shrink-0 self-start sm:self-auto cursor-pointer"
+                      title="Trích xuất tự động Tên, Góc phương vị, Khoảng cách và Chiều cao của CTCN cao nhất"
+                    >
+                      <Zap className="w-3.5 h-3.5 text-amber-600 fill-amber-500" />
+                      <span>⚡ Lấy thông số từ CTCN cao nhất ({surveyCtcnList.length})</span>
+                    </Button>
+                  )}
+                </div>
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   {sortedSurveyParameters.map(param => (
-                    <div key={param.id} className="bg-white p-3 rounded-xl border border-gray-100 shadow-sm transition-all hover:border-blue-200">
-                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5 ml-1">
-                        {param.label}
-                      </label>
-                      <div className="relative">
-                        <Input 
-                          type={param.type}
-                          placeholder={param.type === 'number' ? '0.0' : `Nhập ${param.label.toLowerCase()}...`}
-                          value={surveyResults[param.id] || ''}
-                          onChange={(e: any) => setSurveyResults({...surveyResults, [param.id]: e.target.value})}
-                          className="pr-12 h-10 text-sm font-medium focus:ring-blue-500/20"
-                        />
-                        {param.unit && (
-                          <div className="absolute right-3 top-2.5 text-xs font-bold text-gray-400 pointer-events-none">
-                            {param.unit}
+                    <div key={param.id} className="bg-white p-3.5 rounded-xl border border-gray-100 shadow-sm transition-all hover:border-blue-200 flex flex-col justify-between">
+                      <div className="flex items-center justify-between gap-2 mb-1.5">
+                        <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider truncate" title={param.label}>
+                          {param.label}
+                        </label>
+                        <span className={cn(
+                          "text-[10px] font-semibold px-1.5 py-0.5 rounded border shrink-0",
+                          param.required 
+                            ? "bg-red-50 text-red-700 border-red-200" 
+                            : "bg-slate-100 text-slate-600 border-slate-200"
+                        )}>
+                          {param.required ? 'Bắt buộc' : 'Không bắt buộc'}
+                        </span>
+                      </div>
+
+                      <div className="relative mt-1">
+                        {param.type === 'select' ? (
+                          <select
+                            value={surveyResults[param.id] || ''}
+                            onChange={(e: any) => setSurveyResults({...surveyResults, [param.id]: e.target.value})}
+                            className="w-full border border-gray-200 bg-white rounded-lg h-10 px-3 text-sm font-medium focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none"
+                          >
+                            <option value="">-- Chọn {param.label.toLowerCase()} (Không bắt buộc) --</option>
+                            {(param.options || []).map((opt, idx) => (
+                              <option key={idx} value={opt}>{opt}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <div className="relative">
+                            <Input 
+                              type={param.type}
+                              placeholder={param.type === 'number' ? '0.0 (Không bắt buộc)' : `Nhập ${param.label.toLowerCase()} (Không bắt buộc)...`}
+                              value={surveyResults[param.id] || ''}
+                              onChange={(e: any) => setSurveyResults({...surveyResults, [param.id]: e.target.value})}
+                              className="pr-12 h-10 text-sm font-medium focus:ring-blue-500/20"
+                            />
+                            {param.unit && (
+                              <div className="absolute right-3 top-2.5 text-xs font-bold text-gray-400 pointer-events-none">
+                                {param.unit}
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
@@ -897,6 +1018,36 @@ export function ReportsTab({
                     );
                   })()}
                 </div>
+              </div>
+            )}
+
+            {/* Khảo sát Sector & Vị trí CTCN 100m (QCVN 08:2022/BTTTT) */}
+            {currentSelectedStation && (
+              <div className="space-y-4 pt-4 border-t border-slate-200">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <h4 className="font-bold text-slate-800 text-base flex items-center gap-2">
+                      <Radar className="w-5 h-5 text-blue-600" />
+                      Khảo sát Sector & Công trình có người (CTCN) 100m - QCVN 08
+                    </h4>
+                    <p className="text-xs text-slate-500">
+                      Chạm trực tiếp trên sơ đồ hoặc nhập cự ly & góc phương vị từ chân trụ để đánh giá phơi nhiễm trường điện từ
+                    </p>
+                  </div>
+                  <span className="text-xs font-bold px-3 py-1 bg-blue-100 text-blue-800 rounded-full self-start sm:self-auto">
+                    {surveyCtcnList.length} CTCN đã ghi nhận
+                  </span>
+                </div>
+
+                <SectorRadar100m
+                  station={currentSelectedStation}
+                  sectors={surveySectors}
+                  ctcnList={surveyCtcnList}
+                  onChange={({ sectors, ctcnList }) => {
+                    setSurveySectors(sectors);
+                    setSurveyCtcnList(ctcnList);
+                  }}
+                />
               </div>
             )}
 

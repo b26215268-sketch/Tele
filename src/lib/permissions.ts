@@ -2,7 +2,8 @@ import { AppUser, AppRole } from '../types';
 
 export const OWNER_EMAILS: string[] = [
   'vle94152@gmail.com',
-  'b26215268@gmail.com'
+  'b26215268@gmail.com',
+  'votuyen.vt2@gmail.com'
 ];
 
 export function isOwnerEmail(email?: string | null): boolean {

@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Download, Search, Filter, History, MapPin, User, FileSpreadsheet, Eye, Calendar as CalendarIcon, Clock, X, Trash2, FolderUp, ExternalLink, Image as ImageIcon, CheckCircle2 } from 'lucide-react';
-import { Report, Station, TaskGroup, AuditLog, EquipmentDict, AppUser } from '../types';
+import { Download, Search, Filter, History, MapPin, User, FileSpreadsheet, Eye, Calendar as CalendarIcon, Clock, X, Trash2, FolderUp, ExternalLink, Image as ImageIcon, CheckCircle2, Radar, ClipboardList } from 'lucide-react';
+import { Report, Station, TaskGroup, AuditLog, EquipmentDict, AppUser, SurveyParameter } from '../types';
 import { format, parseISO } from 'date-fns';
 import * as XLSX from 'xlsx';
 import { collection, query, orderBy, onSnapshot, deleteDoc, doc } from 'firebase/firestore';
@@ -20,11 +20,12 @@ interface Props {
   stations: Station[];
   taskGroups: TaskGroup[];
   equipmentDict: EquipmentDict[];
+  surveyParameters?: SurveyParameter[];
   currentAppUser?: AppUser | null;
   user?: import('firebase/auth').User | null;
 }
 
-export function ReportManagementTab({ reports, stations, taskGroups, equipmentDict, currentAppUser, user }: Props) {
+export function ReportManagementTab({ reports, stations, taskGroups, equipmentDict, surveyParameters = [], currentAppUser, user }: Props) {
   const isAdmin = isOwnerEmail(user?.email) || currentAppUser?.role === 'admin';
   const [searchTerm, setSearchTerm] = useState('');
   const [filterTaskGroup, setFilterTaskGroup] = useState<string>('ALL');
@@ -303,6 +304,11 @@ export function ReportManagementTab({ reports, stations, taskGroups, equipmentDi
                               <ExternalLink className="w-2.5 h-2.5" />
                             </a>
                           )}
+                          {report.ctcnList && report.ctcnList.length > 0 && (
+                            <span className="text-[10px] bg-red-50 text-red-700 px-1.5 py-0.5 rounded font-medium border border-red-200 flex items-center gap-0.5" title={`${report.ctcnList.length} CTCN trong bán kính 100m`}>
+                              <Radar className="w-2.5 h-2.5 text-red-600" /> {report.ctcnList.length} CTCN (QCVN 08)
+                            </span>
+                          )}
                         </div>
                       </td>
                       <td className="px-4 py-3 align-top">
@@ -469,6 +475,81 @@ export function ReportManagementTab({ reports, stations, taskGroups, equipmentDi
                           })}
                         </tbody>
                       </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* Khảo sát Sector & CTCN 100m (QCVN 08:2022/BTTTT) */}
+                {((viewingReport.ctcnList && viewingReport.ctcnList.length > 0) || (viewingReport.sectors && viewingReport.sectors.length > 0)) && (
+                  <div>
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-blue-900 mb-2 flex items-center gap-1.5">
+                      <Radar className="w-4 h-4 text-blue-600" />
+                      Khảo sát Sector & Công trình có người (CTCN) 100m - QCVN 08
+                    </h4>
+                    {viewingReport.ctcnList && viewingReport.ctcnList.length > 0 ? (
+                      <div className="border border-slate-200 rounded-xl overflow-hidden shadow-xs">
+                        <table className="w-full text-xs">
+                          <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold">
+                            <tr>
+                              <th className="px-3 py-2 text-left">Tên CTCN</th>
+                              <th className="px-3 py-2 text-center">Cự ly từ chân cột (m)</th>
+                              <th className="px-3 py-2 text-center">Góc Bắc (°)</th>
+                              <th className="px-3 py-2 text-left">Sector</th>
+                              <th className="px-3 py-2 text-center">Độ lệch góc</th>
+                              <th className="px-3 py-2 text-center">QCVN 08</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {viewingReport.ctcnList.map((c, i) => (
+                              <tr key={i} className="hover:bg-slate-50/50">
+                                <td className="px-3 py-2 font-semibold text-slate-900">{c.name}</td>
+                                <td className="px-3 py-2 text-center font-bold text-blue-700">{c.distance}m</td>
+                                <td className="px-3 py-2 text-center font-bold">{c.azimuth}°</td>
+                                <td className="px-3 py-2">{c.affectedSectorName || 'Sector'}</td>
+                                <td className="px-3 py-2 text-center">{c.offsetAngle > 0 ? `+${c.offsetAngle}°` : `${c.offsetAngle}°`}</td>
+                                <td className="px-3 py-2 text-center">
+                                  <span className={cn(
+                                    "px-2 py-0.5 rounded text-[10px] font-bold",
+                                    c.exposureRisk === 'high' ? "bg-red-100 text-red-800" :
+                                    c.exposureRisk === 'medium' ? "bg-amber-100 text-amber-800" :
+                                    "bg-emerald-100 text-emerald-800"
+                                  )}>
+                                    {c.exposureRisk === 'high' ? "Ưu tiên đo" : c.exposureRisk === 'medium' ? "Cần đo" : "An toàn"}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-500 italic p-3 bg-slate-50 rounded-xl border border-slate-100">
+                        Không ghi nhận CTCN nào trong bán kính 100m.
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* Thông số khảo sát hạ tầng & anten */}
+                {viewingReport.surveyResults && Object.keys(viewingReport.surveyResults).some(k => Boolean(viewingReport.surveyResults?.[k])) && (
+                  <div>
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 mb-2 flex items-center gap-1.5">
+                      <ClipboardList className="w-4 h-4 text-blue-600" />
+                      Thông số khảo sát hạ tầng & anten
+                    </h4>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 bg-slate-50 p-3 rounded-xl border border-slate-200">
+                      {Object.entries(viewingReport.surveyResults).map(([paramId, val]) => {
+                        if (val === undefined || val === null || val === '') return null;
+                        const matchedParam = (surveyParameters || []).find(p => p.id === paramId);
+                        const label = matchedParam?.label || paramId;
+                        const unit = matchedParam?.unit ? ` ${matchedParam.unit}` : '';
+                        return (
+                          <div key={paramId} className="bg-white p-2.5 rounded-lg border border-slate-200 flex items-center justify-between">
+                            <span className="text-xs text-slate-600 font-medium truncate pr-2">{label}</span>
+                            <span className="text-xs font-bold text-slate-900 bg-slate-100 px-2 py-0.5 rounded shrink-0">{val}{unit}</span>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 )}

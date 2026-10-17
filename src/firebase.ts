@@ -9,7 +9,7 @@ const app = initializeApp(firebaseConfig);
 // Initialize Firestore with settings for better connectivity in sandboxed environments
 export const db = initializeFirestore(app, {
   experimentalForceLongPolling: true,
-}, firebaseConfig.firestoreDatabaseId);
+}, (firebaseConfig as any).firestoreDatabaseId);
 
 export const auth = getAuth(app);
 export const storage = getStorage(app);

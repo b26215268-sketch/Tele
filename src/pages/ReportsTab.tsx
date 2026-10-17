@@ -14,7 +14,7 @@ import { FileText, Save, CheckCircle, Image as ImageIcon, MessageSquare, X, Chev
 import { handleFirestoreError } from '../lib/firebase-utils';
 import { removeVietnameseTones } from '../lib/utils';
 import { SectorRadar100m } from '../components/SectorRadar100m';
-import { getDefaultSectors } from '../lib/telecomGeo';
+import { getDefaultSectors, cleanFirestoreData } from '../lib/telecomGeo';
 
 export function ReportsTab({
   stations,
@@ -206,6 +206,9 @@ export function ReportsTab({
       } else {
         setSurveyCtcnList([]);
       }
+      if (activeSt.googleDriveFolderUrl) {
+        setGoogleDriveUrl(activeSt.googleDriveFolderUrl);
+      }
     }
   }, [stationId, stations]);
 
@@ -216,8 +219,10 @@ export function ReportsTab({
       return;
     }
 
-    // Sort by height descending
-    const tallest = [...surveyCtcnList].sort((a, b) => (b.heightMeters || 0) - (a.heightMeters || 0))[0];
+    // Prioritize explicitly marked tallest CTCN or highest building (excluding pure landscape)
+    const explicitTallest = surveyCtcnList.find(c => c.isTallest);
+    const buildingList = surveyCtcnList.filter(c => c.objectCategory !== 'landscape' && c.isCtcn !== false && (c.heightMeters || c.floors));
+    const tallest = explicitTallest || [...buildingList].sort((a, b) => (b.heightMeters || 0) - (a.heightMeters || 0))[0] || surveyCtcnList[0];
     if (!tallest) return;
 
     const updated = { ...surveyResults };
@@ -273,17 +278,17 @@ export function ReportsTab({
           const canvas = document.createElement('canvas');
           let width = img.width;
           let height = img.height;
-          const MAX_WIDTH = 1200;
-          const MAX_HEIGHT = 1200;
+          const MAX_WIDTH = 640;
+          const MAX_HEIGHT = 640;
 
           if (width > height) {
             if (width > MAX_WIDTH) {
-              height *= MAX_WIDTH / width;
+              height = Math.round(height * (MAX_WIDTH / width));
               width = MAX_WIDTH;
             }
           } else {
             if (height > MAX_HEIGHT) {
-              width *= MAX_HEIGHT / height;
+              width = Math.round(width * (MAX_HEIGHT / height));
               height = MAX_HEIGHT;
             }
           }
@@ -294,7 +299,7 @@ export function ReportsTab({
             ctx.drawImage(img, 0, 0, width, height);
 
             if (watermarkTime || watermarkStation || watermarkCoords) {
-              const fontSize = Math.max(16, Math.floor(width * 0.035));
+              const fontSize = Math.max(12, Math.floor(width * 0.03));
               ctx.font = `${fontSize}px sans-serif`;
               
               const lines: string[] = [];
@@ -327,7 +332,7 @@ export function ReportsTab({
               }
             }
           }
-          resolve(canvas.toDataURL('image/jpeg', 0.8));
+          resolve(canvas.toDataURL('image/jpeg', 0.65));
         };
         img.onerror = reject;
         img.src = event.target?.result as string;
@@ -561,7 +566,7 @@ export function ReportsTab({
         }]
       };
 
-      const reportRef = await addDoc(collection(db, 'reports'), reportData);
+      const reportRef = await addDoc(collection(db, 'reports'), cleanFirestoreData(reportData));
       
       // Auto-update assignment status to "completed" if assignmentId is present
       if (assignmentId) {
@@ -583,7 +588,7 @@ export function ReportsTab({
         if (surveySectors.length > 0) stationUpdatePayload.sectors = surveySectors;
         if (surveyCtcnList.length > 0) stationUpdatePayload.ctcnList = surveyCtcnList;
 
-        await updateDoc(doc(db, 'stations', finalStationId), stationUpdatePayload);
+        await updateDoc(doc(db, 'stations', finalStationId), cleanFirestoreData(stationUpdatePayload));
       }
 
       // Add to audit_logs

@@ -67,6 +67,16 @@ export interface CtcnObstacle {
   // Phân loại hướng quan sát theo QCVN 08 (Tối thiểu 6 vị trí: 3 hướng sector + 3 hướng giữa sector)
   directionType?: 'sector_main' | 'sector_inter' | 'custom';
   directionLabel?: string;
+  surveyCategory?: 'ctcn' | 'sector_1' | 'sector_2' | 'sector_3' | 'sector_4' | 'inter_s1_s2' | 'inter_s2_s3' | 'inter_s3_s1' | 'tallest' | 'point_emf' | 'other' | string;
+  categoryLabel?: string;
+  // Thông minh: Phân vùng tự động & Phân loại đối tượng khảo sát
+  isCtcn?: boolean; // Đánh dấu là CTCN (Công trình có người)
+  isTallest?: boolean; // Đánh dấu là CTCN cao nhất theo hướng này
+  objectCategory?: 'building' | 'landscape'; // 'building' (cần cao độ) | 'landscape' (bỏ qua cao độ)
+  presetId?: string; // ctcn_house, land_road, land_field, land_water, ...
+  landscapeType?: 'road' | 'field' | 'garden' | 'water' | 'hill' | 'open_land' | 'other';
+  zoneKey?: string; // 'S1', 'S1-S2', 'S2', 'S2-S3', 'S3', 'S3-S1'
+  zoneName?: string; // 'Hướng Sector 1 (60°)', 'Vùng giữa S1 - S2 (120°)'
   // Kết quả phân tích búp sóng theo QCVN 08:2022/BTTTT
   affectedSectorId?: string; // ID sector bị ảnh hưởng
   affectedSectorName?: string; // Tên sector (VD: Sector 1)

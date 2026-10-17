@@ -1,6 +1,6 @@
 {
-  "summary": "Kế hoạch nâng cấp tương tác trên bản đồ vệ tinh 100m: Hỗ trợ click trực tiếp trên các vùng quạt sector để lấy toạ độ/cự ly/góc phương vị tức thì, và bổ sung cơ chế kéo xoay góc phương vị 360° tương tự như phần radar svg.",
-  "updatedAt": "2026-10-16T06:03:17.822774349Z",
+  "summary": "Kế hoạch cải tiến và tối ưu thông minh giao diện khảo sát: Chấm 1 điểm trên bản đồ để xác định CTCN cao nhất với nút bấm chọn tầng siêu tốc (loại bỏ hoàn toàn dropdown), hệ thống tự động trích xuất góc/cự ly và tự động phân vùng cảnh quan theo Sector anten QCVN 08.",
+  "updatedAt": "2026-10-17T10:33:06.389337197Z",
   "requestFeedback": true,
   "userFacing": true
 }

@@ -391,3 +391,286 @@ export function checkQcvn08SurveyCompletion(
     missingItems
   };
 }
+
+export interface DetectedSurveyZone {
+  zoneKey: string; // 'S1', 'S1-S2', 'S2', 'S2-S3', 'S3', 'S3-S1'
+  zoneName: string; // 'Hướng Sector 1', 'Vùng giữa S1 - S2'
+  zoneType: 'sector_main' | 'sector_inter';
+  centerAzimuth: number; // Góc chuẩn tâm vùng
+  offsetAngle: number; // Góc lệch so với tâm vùng
+  sectorName?: string;
+  badgeColor: string;
+}
+
+/**
+ * Tự động nhận diện vùng khảo sát (S1, S2, S3 và các vùng ở giữa)
+ * dựa vào góc phương vị đã chọn trên bản đồ.
+ */
+export function detectSurveyZone(azimuth: number, sectors: SectorInfo[]): DetectedSurveyZone {
+  if (!sectors || sectors.length === 0) {
+    return {
+      zoneKey: 'S1',
+      zoneName: 'Hướng Sector 1 (0°)',
+      zoneType: 'sector_main',
+      centerAzimuth: 0,
+      offsetAngle: angularDifference(0, azimuth),
+      sectorName: 'Sector 1',
+      badgeColor: '#3b82f6'
+    };
+  }
+
+  // Danh sách các ứng viên: Tất cả các hướng chính và các hướng ở giữa
+  interface Candidate {
+    zoneKey: string;
+    zoneName: string;
+    zoneType: 'sector_main' | 'sector_inter';
+    centerAzimuth: number;
+    sectorName?: string;
+    badgeColor: string;
+  }
+
+  const candidates: Candidate[] = [];
+  const sorted = [...sectors].sort((a, b) => a.azimuth - b.azimuth);
+
+  // 1. Thêm các hướng chính của Sector (S1, S2, S3,...)
+  sorted.forEach((sec, idx) => {
+    const code = `S${idx + 1}`;
+    candidates.push({
+      zoneKey: code,
+      zoneName: `Hướng ${sec.name || code} (${sec.azimuth}°)`,
+      zoneType: 'sector_main',
+      centerAzimuth: sec.azimuth,
+      sectorName: sec.name || code,
+      badgeColor: sec.color || '#3b82f6'
+    });
+  });
+
+  // 2. Thêm các hướng ở giữa các Sector (S1-S2, S2-S3, S3-S1,...)
+  const count = sorted.length;
+  if (count >= 2) {
+    for (let i = 0; i < count; i++) {
+      const currentSec = sorted[i];
+      const nextSec = sorted[(i + 1) % count];
+      const codeA = `S${i + 1}`;
+      const codeB = `S${((i + 1) % count) + 1}`;
+
+      let diff = nextSec.azimuth - currentSec.azimuth;
+      if (diff <= 0) diff += 360;
+      const midAz = normalizeAngle(currentSec.azimuth + diff / 2);
+
+      candidates.push({
+        zoneKey: `${codeA}-${codeB}`,
+        zoneName: `Vùng giữa ${codeA} - ${codeB} (${midAz}°)`,
+        zoneType: 'sector_inter',
+        centerAzimuth: midAz,
+        sectorName: `${codeA} & ${codeB}`,
+        badgeColor: '#8b5cf6' // Tím hiện đại cho vùng giao thoa
+      });
+    }
+  }
+
+  // Tìm candidate có độ lệch góc tuyệt đối nhỏ nhất so với azimuth hiện tại
+  let bestCandidate = candidates[0];
+  let minAbsDiff = 360;
+  let signedDiff = 0;
+
+  for (const cand of candidates) {
+    const diff = angularDifference(cand.centerAzimuth, azimuth);
+    const absDiff = Math.abs(diff);
+    if (absDiff < minAbsDiff) {
+      minAbsDiff = absDiff;
+      signedDiff = diff;
+      bestCandidate = cand;
+    }
+  }
+
+  return {
+    zoneKey: bestCandidate.zoneKey,
+    zoneName: bestCandidate.zoneName,
+    zoneType: bestCandidate.zoneType,
+    centerAzimuth: bestCandidate.centerAzimuth,
+    offsetAngle: signedDiff,
+    sectorName: bestCandidate.sectorName,
+    badgeColor: bestCandidate.badgeColor
+  };
+}
+
+export interface SurveyObjectPreset {
+  id: string;
+  name: string;
+  shortLabel: string;
+  icon: string;
+  category: 'building' | 'landscape';
+  requiresHeight: boolean;
+  buildingType?: CtcnObstacle['buildingType'];
+  landscapeType?: CtcnObstacle['landscapeType'];
+  description: string;
+  defaultName: (dist: number, az: number, zoneName: string) => string;
+}
+
+export const SURVEY_OBJECT_PRESETS: SurveyObjectPreset[] = [
+  // Nhóm Công trình xây dựng (CTCN / Cần cao độ & số tầng)
+  {
+    id: 'ctcn_house',
+    name: 'Nhà dân / Khu dân cư',
+    shortLabel: 'Nhà dân',
+    icon: '🏠',
+    category: 'building',
+    requiresHeight: true,
+    buildingType: 'residential',
+    description: 'Nhà ở của người dân, khu dân cư sinh hoạt',
+    defaultName: (d, a, z) => `Nhà dân (${z} - ${d}m)`
+  },
+  {
+    id: 'ctcn_school',
+    name: 'Trường học / Bệnh viện',
+    shortLabel: 'Trường học/BV',
+    icon: '🏫',
+    category: 'building',
+    requiresHeight: true,
+    buildingType: 'school_hospital',
+    description: 'Khu vực nhạy cảm cần lưu ý kiểm định phơi nhiễm',
+    defaultName: (d, a, z) => `Trường học/BV (${z} - ${d}m)`
+  },
+  {
+    id: 'ctcn_office',
+    name: 'Cơ quan / Văn phòng',
+    shortLabel: 'Cơ quan',
+    icon: '🏢',
+    category: 'building',
+    requiresHeight: true,
+    buildingType: 'office',
+    description: 'Trụ sở UBND, cơ quan, văn phòng làm việc',
+    defaultName: (d, a, z) => `Cơ quan (${z} - ${d}m)`
+  },
+  {
+    id: 'ctcn_market',
+    name: 'Trung tâm TM / Chợ',
+    shortLabel: 'Chợ / TTTM',
+    icon: '🏪',
+    category: 'building',
+    requiresHeight: true,
+    buildingType: 'commercial',
+    description: 'Nơi tập trung đông người buôn bán, giao thương',
+    defaultName: (d, a, z) => `Chợ/TTTM (${z} - ${d}m)`
+  },
+  {
+    id: 'ctcn_factory',
+    name: 'Nhà xưởng / KCN',
+    shortLabel: 'Nhà xưởng',
+    icon: '🏭',
+    category: 'building',
+    requiresHeight: true,
+    buildingType: 'industrial',
+    description: 'Khu vực sản xuất, công xưởng, nhà kho',
+    defaultName: (d, a, z) => `Nhà xưởng (${z} - ${d}m)`
+  },
+  {
+    id: 'ctcn_other',
+    name: 'Công trình xây dựng khác',
+    shortLabel: 'CT khác',
+    icon: '🏗️',
+    category: 'building',
+    requiresHeight: true,
+    buildingType: 'other',
+    description: 'Công trình xây dựng có người khác',
+    defaultName: (d, a, z) => `Công trình (${z} - ${d}m)`
+  },
+
+  // Nhóm Cảnh quan tự nhiên & Hạ tầng (Bỏ qua phần nhập cao độ)
+  {
+    id: 'land_road',
+    name: 'Đường xá / Giao thông',
+    shortLabel: 'Đường xá',
+    icon: '🛣️',
+    category: 'landscape',
+    requiresHeight: false,
+    landscapeType: 'road',
+    description: 'Đường nhựa, quốc lộ, tỉnh lộ, đường làng',
+    defaultName: (d, a, z) => `Đường giao thông (${z} - ${d}m)`
+  },
+  {
+    id: 'land_field',
+    name: 'Đồng ruộng / Đất trồng',
+    shortLabel: 'Đồng ruộng',
+    icon: '🌾',
+    category: 'landscape',
+    requiresHeight: false,
+    landscapeType: 'field',
+    description: 'Ruộng lúa, hoa màu, đất nông nghiệp',
+    defaultName: (d, a, z) => `Đồng ruộng (${z} - ${d}m)`
+  },
+  {
+    id: 'land_garden',
+    name: 'Vườn cây / Cây xanh',
+    shortLabel: 'Vườn cây',
+    icon: '🌳',
+    category: 'landscape',
+    requiresHeight: false,
+    landscapeType: 'garden',
+    description: 'Vườn cây ăn quả, rặng cây, công viên',
+    defaultName: (d, a, z) => `Vườn cây (${z} - ${d}m)`
+  },
+  {
+    id: 'land_water',
+    name: 'Sông hồ / Kênh rạch',
+    shortLabel: 'Sông hồ',
+    icon: '🌊',
+    category: 'landscape',
+    requiresHeight: false,
+    landscapeType: 'water',
+    description: 'Sông, hồ nước, ao, kênh rạch, đầm lầy',
+    defaultName: (d, a, z) => `Mặt nước/Sông hồ (${z} - ${d}m)`
+  },
+  {
+    id: 'land_hill',
+    name: 'Đồi núi / Gò đất',
+    shortLabel: 'Đồi núi',
+    icon: '⛰️',
+    category: 'landscape',
+    requiresHeight: false,
+    landscapeType: 'hill',
+    description: 'Đồi, núi đá, gò đất cao tự nhiên',
+    defaultName: (d, a, z) => `Đồi núi (${z} - ${d}m)`
+  },
+  {
+    id: 'land_open',
+    name: 'Đất trống / Bãi đỗ xe',
+    shortLabel: 'Đất trống',
+    icon: '🅿️',
+    category: 'landscape',
+    requiresHeight: false,
+    landscapeType: 'open_land',
+    description: 'Bãi đất trống, sân bãi bê tông, bãi đỗ xe',
+    defaultName: (d, a, z) => `Đất trống (${z} - ${d}m)`
+  }
+];
+
+/**
+ * Recursively cleans any object or array to ensure no undefined values are sent to Firestore.
+ * Firestore strictly rejects undefined in any nested property and throws an error.
+ */
+export function cleanFirestoreData<T>(val: T): T {
+  if (val === undefined) {
+    return null as any;
+  }
+  if (val === null || typeof val !== 'object') {
+    return val;
+  }
+  if (val instanceof Date) {
+    return val.toISOString() as any;
+  }
+  if (Array.isArray(val)) {
+    return val
+      .filter(item => item !== undefined)
+      .map(item => cleanFirestoreData(item)) as any;
+  }
+  const result: Record<string, any> = {};
+  for (const [k, v] of Object.entries(val as Record<string, any>)) {
+    if (v !== undefined) {
+      result[k] = cleanFirestoreData(v);
+    }
+  }
+  return result as T;
+}
+

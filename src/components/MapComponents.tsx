@@ -5,16 +5,36 @@ import { Eye, EyeOff, Layers, Compass } from 'lucide-react';
 
 export type MapType = 'google' | 'satellite' | 'osm';
 
-export const MAP_TILE_PROVIDERS: Record<MapType, { name: string; url: string; attribution: string; subdomains?: string[]; maxZoom?: number }> = {
+// Global defensive patch for Leaflet to prevent any undefined subdomains crash
+if (typeof window !== 'undefined' && L && L.TileLayer && L.TileLayer.prototype) {
+  const proto = L.TileLayer.prototype as any;
+  const origGetSubdomain = proto._getSubdomain;
+  proto._getSubdomain = function(tilePoint: any) {
+    if (!this.options) this.options = {};
+    if (!this.options.subdomains || !this.options.subdomains.length) {
+      this.options.subdomains = ['mt0', 'mt1', 'mt2', 'mt3'];
+    }
+    try {
+      if (typeof origGetSubdomain === 'function') {
+        return origGetSubdomain.call(this, tilePoint);
+      }
+      return 'mt1';
+    } catch (e) {
+      return 'mt1';
+    }
+  };
+}
+
+export const MAP_TILE_PROVIDERS: Record<MapType, { name: string; url: string; attribution: string; subdomains: string[]; maxZoom?: number }> = {
   google: {
-    name: 'Bản đồ số',
+    name: 'Mặt bằng (Google Maps)',
     url: 'https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}',
     attribution: '&copy; Google Maps',
     subdomains: ['mt0', 'mt1', 'mt2', 'mt3'],
     maxZoom: 20
   },
   satellite: {
-    name: 'Vệ tinh',
+    name: 'Vệ tinh (Hybrid)',
     url: 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
     attribution: '&copy; Google Maps Hybrid Satellite',
     subdomains: ['mt0', 'mt1', 'mt2', 'mt3'],
@@ -22,8 +42,9 @@ export const MAP_TILE_PROVIDERS: Record<MapType, { name: string; url: string; at
   },
   osm: {
     name: 'OpenStreetMap',
-    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
     attribution: '&copy; OpenStreetMap contributors',
+    subdomains: ['a', 'b', 'c'],
     maxZoom: 19
   }
 };

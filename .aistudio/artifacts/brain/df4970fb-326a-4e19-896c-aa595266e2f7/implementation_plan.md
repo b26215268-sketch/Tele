@@ -1,107 +1,147 @@
-# Tương tác Click & Kéo Xoay Góc Phương Vị Trên Bản Đồ Vệ Tinh 100m
+# Kế hoạch Tối ưu Thông minh: Xác định CTCN Cao nhất & Tự động Phân vùng Cảnh quan QCVN 08
 
-Nâng cấp trải nghiệm tương tác trên tab Bản đồ Vệ tinh (Leaflet 100m) đồng bộ hoàn toàn với màn hình Radar SVG: cho phép chạm/click trực tiếp vào các cánh quạt Sector để tự động tính toán toạ độ, góc phương vị, cự ly về trạm; đồng thời cung cấp chốt xoay / vòng xoay tương tác 360° mượt mà không bị kẹt panning bản đồ.
+Giải pháp giao diện tối giản, trực quan và thông minh nhất: Người dùng chỉ cần **chạm 1 điểm trên bản đồ** để xác định công trình cao nhất, hệ thống **tự động tính Góc phương vị & Cự ly**, cung cấp **nút bấm 1 chạm chọn số tầng (loại bỏ hoàn toàn dropdown)**; toàn bộ thông tin cảnh quan và 6 hướng xung quanh sẽ được **hệ thống tự động phân vùng theo Sector** mà không cần nhập thủ công.
 
-## Quyết Định Cốt Lõi Từ Người Dùng (Đã Xác Nhận)
+---
+
+### User Review & Critical Decisions
 
 > [!IMPORTANT]
-> - **Tương tác click trên sector vệ tinh**: Chạm vào bất kỳ điểm nào trên cánh quạt sector sẽ kích hoạt ngay việc lấy toạ độ GPS, tính toán góc phương vị (° Bắc) và khoảng cách (m) tới chân cột trạm anten, đồng thời gán vào form khảo sát/CTCN thay vì bị chặn bởi popup tĩnh của Leaflet.
-> - **Cơ chế xoay vòng 360° trên vệ tinh**: Trang bị chốt quét / tay nắm xoay hướng phương vị trực quan trên tia định hướng (Dynamic Guideline). Khi người dùng giữ và kéo xoay xung quanh tâm trạm, bản đồ tự động khoá trượt (panning lock) để người dùng quay góc 0°–360° và thay đổi cự ly 0–100m mượt mà như trên Radar SVG.
+> **Các quyết định đã được xác nhận cùng người dùng:**
+> 1. **Thao tác cốt lõi duy nhất**: Khảo sát thực địa theo QCVN 08 thực chất chỉ cần xác định **Công trình xây dựng có người (CTCN) cao nhất** có khả năng bị ảnh hưởng búp sóng. Người dùng chỉ cần chạm 1 điểm trên bản đồ (Radar 100m hoặc Vệ tinh).
+> 2. **Loại bỏ hoàn toàn Dropdown**: Thay thế toàn bộ menu chọn tầng/loại hình phức tạp bằng **các nút bấm 1 chạm nhanh** (`1 tầng ~3.5m`, `2 tầng ~7m`, `3 tầng ~10.5m`, `4 tầng ~14m`, `5 tầng ~17.5m`, `>5 tầng`) kết hợp stepper tăng giảm số tầng và ô nhập độ cao trực tiếp.
+> 3. **Tự động phân vùng cảnh quan thông minh**: Toàn bộ cảnh quan, góc lệch so với búp sóng chính của các Sector anten, và khoảng cách an toàn phơi nhiễm sẽ do thuật toán tự động nhận diện từ cấu hình trạm. Người dùng không phải nhập 6 hướng hay phân loại thủ công từng cảnh quan.
+> 4. **Hộp thoại tối giản (Compact Quick-Input Modal)**: Xuất hiện tinh gọn, nổi bật ngay trên bản đồ, tự động điền sẵn cự ly, góc phương vị, tên mặc định và tự tích chọn "CTCN cao nhất" để lưu ngay chỉ sau 2 lần chạm.
 
 ---
 
-### 1. Tổng Quan & Trải Nghiệm Người Dùng
+### 1. Overview & Core Concept
 
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│ MÀN HÌNH BẢN ĐỒ VỆ TINH 100m (QCVN 08)                                │
-├────────────────────────────────────────────────────────────────────────┤
-│                                                                        │
-│        Bắc (0°)                                                        │
-│           ▲                                                            │
-│           │                                                            │
-│       ┌───┼───┐                                                        │
-│     ／    │    ＼     [Sector 1: 60°]                                  │
-│    │      │  ◢███     Click trực tiếp vào đây ──► Tự động bắt toạ độ,  │
-│    │      │ ◢████                                 cự ly & góc phương vị│
-│    │      🗼──────►   Tay nắm xoay (Rotate Handle)                     │
-│    │      │           Giữ & kéo vòng quanh trạm ──► Quét góc 0-360°    │
-│     ＼    │    ／                                 như trên Radar SVG   │
-│       └───┼───┘                                                        │
-│           ▼                                                            │
-│        Nam (180°)                                                      │
-│                                                                        │
-│ [⚡ Góc hiện tại: 72° | Cự ly: 45m | Sector 1 (Trong búp sóng chính)]  │
-└────────────────────────────────────────────────────────────────────────┘
-```
-
-- **Vấn đề hiện tại**:
-  1. Trên bản đồ Leaflet vệ tinh, các `Polygon` của từng sector đang nhận sự kiện click độc quyền để mở `Popup` thông tin, làm nuốt mất sự kiện click của bản đồ (`onMapClick`), khiến người dùng không thể bấm chọn điểm bên trong vùng phủ sóng sector.
-  2. Không có công cụ kéo xoay góc trực tiếp xung quanh tâm trạm trên ảnh vệ tinh: khi chạm kéo ngón tay/chuột thì Leaflet nhận diện là kéo di chuyển bản đồ (pan), không xoay được góc phương vị như màn hình Radar SVG.
-- **Giải pháp mang lại**:
-  - Gắn sự kiện click trực tiếp lên toàn bộ các `Polygon` sector và các vòng tròn cự ly để kích hoạt `handleSatelliteClick` tức thì.
-  - Bổ sung `Interactive Guideline & Rotate Reticle Marker`: hiển thị tia quét động nối từ tâm trạm đến điểm ngắm với chốt tròn xoay (draggable). Khi kéo chốt xoay, hệ thống tạm tắt `map.dragging` để người dùng quay vòng 360° quanh trạm với tooltip hiển thị góc và cự ly thời gian thực.
+- **Mục tiêu sản phẩm**: Giúp kỹ sư đo kiểm trạm viễn thông hoàn thành việc định vị và đo vẽ công trình cao nhất trong bán kính 100m chỉ trong **vài giây**, chuẩn hóa biên bản khảo sát theo QCVN 08:2022/BTTTT mà không tốn công nhập liệu thủ công rườm rà.
+- **Đối tượng sử dụng**: Kỹ sư trắc địa, cán bộ kiểm định vô tuyến điện, quản lý vận hành trạm BTS trên hiện trường hoặc qua máy tính/tablet.
+- **Giá trị cốt lõi**:
+  - Tối ưu thao tác từ 8 bước phức tạp xuống còn **2 chạm**: Chạm vị trí trên bản đồ $\rightarrow$ Bấm chọn số tầng $\rightarrow$ Lưu xong!
+  - Thuật toán thông minh tự động kết nối góc phương vị của điểm chọn với búp sóng Sector tương ứng để phân tích rủi ro phơi nhiễm.
 
 ---
 
-### 2. Thiết Kế Chi Tiết & Luồng Tương Tác
+### 2. User Experience & Visual Design
 
-1. **Click trên cánh quạt Sector**:
-   - Khi người khảo sát nhấp vào bất kỳ vị trí nào trên polygon của Sector 1, 2, 3:
-     - Tính toạ độ GPS chính xác tại vị trí nhấp.
-     - Tính góc phương vị `azimuth` (độ so với hướng Bắc) và khoảng cách `distance` (mét tới chân trụ, clamp tối đa 100m).
-     - Phân tích vị trí nằm trong hay ngoài búp sóng chính (`isInMainLobe`, `offsetAngle`).
-     - Tự động điền vào Form khảo sát (Mục công trình cao nhất hoặc vị trí quan sát).
-2. **Kéo xoay góc phương vị (Azimuth Rotation)**:
-   - Một chốt xoay màu nổi bật (xanh dương sáng viền trắng) nằm ở đầu tia định hướng 100m.
-   - Khi bắt đầu kéo (`dragstart`): Leaflet tạm thời tắt panning bản đồ, bật chế độ đo góc thời gian thực.
-   - Khi đang xoay (`drag`): Tính toán góc phương vị mới liên tục theo vị trí con trỏ chuột/chạm so với toạ độ tâm trạm. Badge góc hiển thị nhảy số mượt mà `0° -> 360°`.
-   - Khi nhả tay (`dragend`): Cập nhật toạ độ cuối cùng vào điểm khảo sát và kích hoạt lại panning bản đồ.
-3. **Thanh công cụ bổ trợ trên bản đồ vệ tinh**:
-   - Nút bật/tắt nhanh chế độ "Kéo xoay góc phương vị" / "Di chuyển bản đồ" để người dùng trên thiết bị di động thao tác tiện lợi mà không bị nhầm lẫn.
+#### A. Quy trình tương tác người dùng (User Flow)
+
+```
+[Bản đồ Radar 100m / Vệ tinh]
+         │
+         ▼  (Người dùng chạm 1 điểm vào vị trí công trình cao nhất)
+┌─────────────────────────────────────────────────────────────┐
+│ 📍 Hộp thoại Nhập liệu Siêu Tốc (Quick Modal)               │
+│                                                             │
+│ • Tọa độ tự nhận: Cự ly: 42m · Góc: 115° · Thuộc Sector 1   │
+│ • Trạng thái: [✔ Đặt làm CTCN cao nhất khảo sát]           │
+│                                                             │
+│ 🏢 Chọn nhanh Số tầng (1-Tap Buttons - KHÔNG DROPDOWN):    │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐        │
+│  │ 1T (3.5m)│ │ 2T (7.0m)│ │ 3T (10.5)│ │ 4T (14m) │        │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘        │
+│  ┌──────────┐ ┌────────────────────────────────────┐        │
+│  │ 5T (17.5)│ │ [ - ] Số tầng: 3 [ + ]   [10.5m]   │        │
+│  └──────────┘ └────────────────────────────────────┘        │
+│                                                             │
+│ [ Hủy ]                                 [ 💾 Lưu CTCN Ngay ]│
+└─────────────────────────────────────────────────────────────┘
+         │
+         ▼
+[Cập nhật ngay lập tức vào Bản đồ, Bảng Mục 2 & Báo cáo QCVN 08]
+```
+
+#### B. Ngôn ngữ thiết kế & Trực quan hóa
+
+- **Phong cách**: Kỹ thuật chuyên nghiệp, tinh gọn, độ tương phản cao, tối ưu cho cả thao tác chuột trên máy tính và chạm ngón tay trên máy tính bảng/điện thoại ngoài hiện trường.
+- **Màu sắc chủ đạo**:
+  - Nền hộp thoại: Trắng sạch / Slate cao cấp (`bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800`).
+  - Điểm nhấn CTCN cao nhất: Màu đỏ cam nổi bật (`bg-rose-500` / `bg-amber-500`) phân biệt rõ với tâm trạm (`bg-blue-600`).
+  - Nút bấm số tầng: Nền nhã nhặn, khi chọn sẽ active với viền đậm và nền xanh biển kỹ thuật (`bg-blue-600 text-white shadow-sm`).
+- **Typography & Font**:
+  - Số liệu góc, cự ly và chiều cao luôn hiển thị dạng Monospace Tabular (`tabular-nums font-mono text-sm font-semibold`) giúp mắt kỹ sư dễ quét số đo.
+  - Nhãn hiển thị bằng tiếng Việt rõ ràng, ngắn gọn, không lạm dụng thuật ngữ trừu tượng.
 
 ---
 
-### 3. Kiến Trúc Kỹ Thuật
+### 3. Key Product Decisions & Trade-Offs
 
-```
-                    ┌────────────────────────────┐
-                    │   SectorRadar100m.tsx      │
-                    └─────────────┬──────────────┘
-                                  │
-          ┌───────────────────────┴───────────────────────┐
-          ▼                                               ▼
-┌───────────────────────────────┐           ┌───────────────────────────────┐
-│     Radar SVG View            │           │  Leaflet Satellite View       │
-│  - PointerDown / Move / Up    │           │  - SatelliteMapEvents         │
-│  - svgToPolar(x, y)           │           │  - Sector Polygon OnClick     │
-│  - Realtime Guideline 360°    │           │  - Rotate Reticle (Draggable) │
-│  - Distance: 0-100m           │           │  - Azimuth/Distance Sync      │
-└───────────────────────────────┘           └───────────────────────────────┘
-                                  │
-                                  ▼
-                    ┌────────────────────────────┐
-                    │  telecomGeo.ts             │
-                    │  - computeDistanceBearing  │
-                    │  - computeDestinationPoint │
-                    │  - analyzeCtcnSectorAndRisk│
-                    └────────────────────────────┘
-```
+#### Quyết định 1: Loại bỏ 100% Dropdown chọn số tầng & phân loại
+- **Giải pháp**: Dùng thanh nút bấm chọn nhanh trực quan (`1T`, `2T`, `3T`, `4T`, `5T`, `Khác`) kèm bộ nút bấm cộng/trừ `[ - ] [ + ]` và ô số để người dùng nhập chiều cao lẻ nếu muốn (ví dụ 11.2m).
+- **Lý do**: Dropdown trên màn hình cảm ứng hoặc bản đồ rất khó bấm, dễ nhảy menu và mất nhiều thao tác cuộn tìm. Nút bấm 1 chạm giúp hoàn tất chỉ trong 0.5 giây.
+- **Phương án bị loại bỏ**: Các thẻ select menu dài danh sách từ 1 đến 20 tầng.
 
-- **Tệp nguồn tác động chính**:
-  - `src/components/SectorRadar100m.tsx`: Cập nhật cấu hình polygon click handlers, bổ sung Reticle Marker xoay phương vị 360° trên Leaflet, xử lý lock dragging mượt mà.
-  - `src/components/StationSectorModal.tsx`: Đồng bộ giá trị góc phương vị và cự ly cập nhật từ bản đồ vệ tinh sang các ô nhập liệu của Form khảo sát hiện hành.
+#### Quyết định 2: Tự động phân vùng cảnh quan thông minh theo Sector
+- **Giải pháp**: Phần mềm tự động tính toán góc phủ của từng Sector (ví dụ: Sector 1 hướng 60°, Sector 2 hướng 180°, Sector 3 hướng 300°). Bất kỳ điểm nào người dùng chọn sẽ tự động được gán vào Sector tương ứng và xác định góc lệch so với búp sóng chính.
+- **Lý do**: Bản chất địa hình và cảnh quan xung quanh đã cố định theo tọa độ trạm và bán kính 100m. Người dùng chỉ cần chỉ định công trình cao nhất là đủ điều kiện tính toán phơi nhiễm theo QCVN 08. Việc bắt người dùng phân loại cảnh quan từng góc gây ức chế và không cần thiết.
+
+#### Quyết định 3: Hộp thoại Nhập liệu Nổi Tinh gọn (Compact Floating Dialog)
+- **Giải pháp**: Khi click bản đồ, hiển thị hộp thoại nổi dạng Modal ở trung tâm hoặc góc bản đồ với kích thước vừa phải (dưới 420px), không che mất tầm nhìn tổng thể của anten và các búp sóng.
+- **Lý do**: Giúp người dùng vừa nhìn thấy vị trí tương quan của anten vừa xác nhận số tầng nhanh chóng.
 
 ---
 
-### 4. Kế Hoạch Kiểm Thử & Nghiệm Thu
+### 4. Technical Architecture & Data Strategy
 
-1. **Kiểm tra click trên Sector**:
-   - Chuyển sang tab Vệ tinh trên modal trạm bất kỳ.
-   - Click chuột vào giữa vùng quạt Sector 1, Sector 2, Sector 3.
-   - Xác nhận: Hệ thống lập tức đặt điểm ghim, tính đúng khoảng cách (m) và góc phương vị (°), form tự nhận dữ liệu.
-2. **Kiểm tra kéo xoay vòng 360°**:
-   - Dùng chuột/ngón tay chạm giữ chốt xoay trên tia quét và quay vòng tròn quanh cột trạm.
-   - Xác nhận: Tia quét xoay theo trơn tru từ 0° đến 360°, cự ly co giãn theo vị trí kéo, badge hiển thị số góc tức thời, bản đồ không bị giật hay vô tình kéo lệch tâm.
-3. **Kiểm tra tính nhất quán**:
-   - Khi chuyển đổi qua lại giữa tab Radar SVG và Bản đồ vệ tinh, góc phương vị và vị trí điểm khảo sát đồng bộ chính xác 100%.
+#### Sơ đồ Kiến trúc & Luồng Dữ liệu (Component & Data Flow)
+
+```
+┌────────────────────────────────────────────────────────┐
+│                   Hồ sơ Trạm BTS                       │
+│    Tọa độ GPS Trạm · Cấu hình Anten Sector (Azimuth/Tilt)│
+└──────────────────────────┬─────────────────────────────┘
+                           │
+                           ▼
+┌────────────────────────────────────────────────────────┐
+│      Bản đồ Tương tác 100m (SectorRadar100m.tsx)       │
+│  - Radar SVG 100m / Bản đồ Leaflet Vệ tinh             │
+│  - Thuật toán chuyển đổi Pixel/GPS -> Cự ly & Góc      │
+└──────────────────────────┬─────────────────────────────┘
+                           │  Sự kiện Click (X, Y) hoặc (Lat, Lng)
+                           ▼
+┌────────────────────────────────────────────────────────┐
+│    Hộp thoại Nhập liệu Tối giản (Quick Ctcn Modal)     │
+│  - Tự động điền: Distance (m), Azimuth (°)             │
+│  - Nút bấm nhanh Số tầng: 1T (3.5m) ... 5T (17.5m)     │
+│  - Stepper điều chỉnh số tầng & Chiều cao lẻ (m)       │
+│  - Tự động nhận diện Sector búp sóng tương ứng         │
+└──────────────────────────┬─────────────────────────────┘
+                           │  Lưu (Save)
+                           ▼
+┌────────────────────────────────────────────────────────┐
+│       Danh sách CTCN & Bảng Mục 2 (QCVN 08)            │
+│  - Tự động đồng bộ vào `station.tallestObstacle`       │
+│  - Tự động cập nhật Bảng khảo sát thực địa Mục 2       │
+│  - Xuất báo cáo tính toán phơi nhiễm tự động           │
+└────────────────────────────────────────────────────────┘
+```
+
+#### Công thức & Quy tắc Tính toán:
+1. **Khoảng cách ($d$) & Góc phương vị ($\theta$)**:
+   $$\Delta x = x_{\text{click}} - x_{\text{station}}, \quad \Delta y = y_{\text{click}} - y_{\text{station}}$$
+   $$d = \sqrt{\Delta x^2 + \Delta y^2} \times \text{Scale}$$
+   $$\theta = (\text{atan2}(\Delta x, -\Delta y) \times \frac{180}{\pi} + 360) \pmod{360}$$
+2. **Quy đổi Số tầng ra Chiều cao đề xuất**:
+   $$h_{\text{gợi ý}} = N_{\text{tầng}} \times 3.5\text{m}$$ (người dùng có thể chỉnh sửa tự do).
+3. **Phân vùng Cảnh quan & Sector tự động**:
+   Hệ thống so sánh góc $\theta$ với góc phương vị của từng Sector:
+   $$\Delta \theta_i = |\theta - \text{Azimuth}_{\text{Sector } i}|$$
+   Sector có $\Delta \theta_i$ nhỏ nhất sẽ tự động nhận diện điểm này thuộc búp sóng Sector đó.
+
+---
+
+### 5. Kế hoạch Thực hiện Cụ thể
+
+1. **Cập nhật `src/components/SectorRadar100m.tsx`**:
+   - Tinh gọn giao diện Hộp thoại nhập liệu: Thay toàn bộ các trường dropdown rườm rà bằng dãy nút bấm 1 chạm số tầng (`1T`, `2T`, `3T`, `4T`, `5T`), nút `[ - ]` và `[ + ]`, cùng ô hiển thị mét trực tiếp.
+   - Thêm nút check mặc định: "Đánh dấu là CTCN cao nhất".
+   - Tự động gán nhãn Sector và vùng ảnh hưởng dựa trên góc phương vị mà không bắt người dùng chọn thủ công.
+2. **Cập nhật Bảng Mục 2 trong `src/components/StationSectorModal.tsx`**:
+   - Hiển thị danh sách khảo sát gọn gàng với cột Số tầng, Chiều cao (m), Cự ly, Góc phương vị và Sector phụ trách.
+   - Nút "Chấm trên bản đồ" mở trực tiếp chế độ định vị nhanh.
+3. **Kiểm thử và xác minh**:
+   - Thao tác chấm điểm trên cả Radar SVG và Bản đồ vệ tinh: modal mở lập tức, góc và khoảng cách tính chuẩn xác, chọn tầng 1 chạm mượt mà.
+   - Kiểm tra tính toán phân tích phơi nhiễm tự động đối chiếu QCVN 08.

@@ -1,93 +1,59 @@
-// ===============================================================
-// Assumed Data Model
-// ===============================================================
-//
-// Collection: stations
-// Fields:
-//   - name: string (required)
-//   - latitude: number (required)
-//   - longitude: number (required)
-//   - address: string (required)
-//   - managerName: string (required)
-//   - managerPhone: string (required)
-//
-// Collection: reports
-// Fields:
-//   - userId: string (required)
-//   - stationId: string (required)
-//   - date: string (required, YYYY-MM-DD)
-//   - content: string (required)
-//   - status: string (required, enum: ['completed', 'pending'])
-//
-// Collection: dailyPlans
-// Fields:
-//   - userId: string (required)
-//   - date: string (required, YYYY-MM-DD)
-//   - stationIds: list (required)
-//
-// ===============================================================
-
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    function isAuthenticated() {
-      return request.auth != null;
-    }
-
     match /users/{userId} {
-      allow read, write: if isAuthenticated();
+      allow read, write: if true;
     }
     match /roles/{roleId} {
-      allow read, write: if isAuthenticated();
+      allow read, write: if true;
     }
     match /stations/{stationId} {
-      allow read, write: if isAuthenticated();
+      allow read, write: if true;
     }
     match /campaigns/{campaignId} {
-      allow read, write: if isAuthenticated();
+      allow read, write: if true;
     }
     match /taskGroups/{taskGroupId} {
-      allow read, write: if isAuthenticated();
+      allow read, write: if true;
     }
     match /task_groups/{taskGroupId} {
-      allow read, write: if isAuthenticated();
+      allow read, write: if true;
     }
     match /equipmentDict/{equipmentId} {
-      allow read, write: if isAuthenticated();
+      allow read, write: if true;
     }
     match /equipment_dictionary/{equipmentId} {
-      allow read, write: if isAuthenticated();
+      allow read, write: if true;
     }
     match /surveyParameters/{parameterId} {
-      allow read, write: if isAuthenticated();
+      allow read, write: if true;
     }
     match /survey_parameters/{parameterId} {
-      allow read, write: if isAuthenticated();
+      allow read, write: if true;
     }
     match /assignments/{assignmentId} {
-      allow read, write: if isAuthenticated();
+      allow read, write: if true;
     }
     match /reports/{reportId} {
-      allow read, write: if isAuthenticated();
+      allow read, write: if true;
     }
     match /dailyPlans/{planId} {
-      allow read, write: if isAuthenticated();
+      allow read, write: if true;
     }
     match /audit_logs/{logId} {
-      allow read, write: if isAuthenticated();
+      allow read, write: if true;
     }
     match /workspaces/{docId} {
-      allow read, write: if isAuthenticated();
+      allow read, write: if true;
     }
     match /test/{docId} {
       allow read, write: if true;
     }
     match /_heartbeat/{docId} {
-      allow read: if true;
-      allow write: if false;
+      allow read, write: if true;
     }
     match /{document=**} {
-      allow read, write: if isAuthenticated();
+      allow read, write: if true;
     }
   }
 }

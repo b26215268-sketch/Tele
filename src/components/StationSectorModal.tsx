@@ -24,7 +24,11 @@ import {
   Plus,
   Trash2,
   Eye,
-  Info
+  Info,
+  CloudUpload,
+  Settings,
+  Loader2,
+  FolderPlus
 } from 'lucide-react';
 import { Station, SectorInfo, CtcnObstacle } from '../types';
 import { SectorRadar100m } from './SectorRadar100m';
@@ -38,8 +42,26 @@ import {
   generateStandard6ObservationDirections, 
   checkQcvn08SurveyCompletion,
   computeDestinationPoint,
-  analyzeCtcnSectorAndRisk
+  analyzeCtcnSectorAndRisk,
+  cleanFirestoreData
 } from '../lib/telecomGeo';
+import {
+  getGoogleDriveConfig,
+  saveGoogleDriveConfig,
+  uploadDossierToGoogleDrive,
+  testGoogleAppsScript,
+  GoogleDriveConfig,
+  extractGoogleDriveFolderId,
+  GOOGLE_APPS_SCRIPT_SAMPLE_CODE
+} from '../lib/googleDriveService';
+import {
+  signInWithGoogleDrive,
+  signOutGoogleDrive,
+  getGoogleDriveAccessToken,
+  getGoogleDriveUser,
+  subscribeGoogleDriveAuth
+} from '../lib/googleDriveAuth';
+import { User } from 'firebase/auth';
 
 interface StationSectorModalProps {
   station: Station | null;
@@ -71,9 +93,32 @@ export function StationSectorModal({
     antennaPhotos?: { id: string; name: string; url: string }[];
   }>({});
 
+  // Google Drive configuration and upload states
+  const [driveConfig, setDriveConfig] = useState<GoogleDriveConfig>(getGoogleDriveConfig());
+  const [showDriveConfigModal, setShowDriveConfigModal] = useState(false);
+  const [isUploadingToDrive, setIsUploadingToDrive] = useState(false);
+  const [driveUploadStatus, setDriveUploadStatus] = useState<string | null>(null);
+  const [driveUploadResult, setDriveUploadResult] = useState<{ success: boolean; message: string; url?: string } | null>(null);
+  const [copiedFolderName, setCopiedFolderName] = useState(false);
+  const [isSavingDriveUrl, setIsSavingDriveUrl] = useState(false);
+  const [isTestingAppsScript, setIsTestingAppsScript] = useState(false);
+  const [appsScriptTestResult, setAppsScriptTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [driveUser, setDriveUser] = useState<User | null>(getGoogleDriveUser());
+  const [isSigningInGoogle, setIsSigningInGoogle] = useState(false);
+
+  // Listen to Google Drive OAuth state
+  useEffect(() => {
+    const unsub = subscribeGoogleDriveAuth((user) => {
+      setDriveUser(user);
+    });
+    return () => unsub();
+  }, []);
+
   // Sync state when station opens
   useEffect(() => {
     if (station) {
+      setDriveConfig(getGoogleDriveConfig());
+      setDriveUploadResult(null);
       setSectors(station.sectors || []);
       setCtcnList(station.ctcnList || []);
       setSurveyResults(station.surveyResults || {});
@@ -110,15 +155,21 @@ export function StationSectorModal({
       return;
     }
 
-    const tallest = [...ctcnList].sort((a, b) => (b.heightMeters || 0) - (a.heightMeters || 0))[0];
+    const explicitTallest = ctcnList.find(c => c.isTallest);
+    const buildingList = ctcnList.filter(c => c.objectCategory !== 'landscape' && c.isCtcn !== false && (c.heightMeters || c.floors));
+    const tallest = explicitTallest || [...buildingList].sort((a, b) => (b.heightMeters || 0) - (a.heightMeters || 0))[0] || ctcnList[0];
     if (!tallest) return;
+
+    const estimatedHeight = tallest.heightMeters || (tallest.floors ? Math.round(tallest.floors * 3.5 * 10) / 10 : 12);
+    const floors = tallest.floors || Math.max(1, Math.round(estimatedHeight / 3.5));
 
     setSurveyResults(prev => ({
       ...prev,
       tallestName: tallest.name,
       tallestAzimuth: tallest.azimuth,
       tallestDistance: Math.round(tallest.distance),
-      tallestHeight: tallest.heightMeters || (tallest.floors ? tallest.floors * 3.5 : 12),
+      tallestHeight: estimatedHeight,
+      tallestFloors: floors,
       observationAzimuth: prev.observationAzimuth || tallest.azimuth
     }));
 
@@ -127,7 +178,7 @@ export function StationSectorModal({
       setSurveyPhotos(p => ({ ...p, tallestObstaclePhotoUrl: tallest.photoUrl }));
     }
 
-    alert(`Đã trích xuất thông số CTCN cao nhất: "${tallest.name}" (Cao ${tallest.heightMeters || 0}m, cách ${Math.round(tallest.distance)}m, hướng ${tallest.azimuth}°)!`);
+    alert(`Đã trích xuất thông số CTCN cao nhất: "${tallest.name}" (${floors} tầng, Cao ${estimatedHeight}m, cách ${Math.round(tallest.distance)}m, hướng ${tallest.azimuth}°)!`);
   };
 
   // Quick generate 6 standard QCVN 08 observation directions (3 main sectors + 3 inter-sector)
@@ -177,7 +228,46 @@ export function StationSectorModal({
     alert(`Đã bổ sung ${newPoints.length} vị trí quan sát chuẩn QCVN 08 (3 hướng sector & 3 hướng xen kẽ)!`);
   };
 
-  // Image compression & file handler for Surveyor
+  // Safe base64 re-compressor to guarantee Firestore < 1MB limit per document
+  const shrinkBase64IfLarge = async (dataUrl: string | undefined): Promise<string | undefined> => {
+    if (!dataUrl || !dataUrl.startsWith('data:image')) return dataUrl;
+    // If under 75KB (~100,000 characters base64), it is already safe
+    if (dataUrl.length < 100000) return dataUrl;
+
+    return new Promise<string>((resolve) => {
+      try {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const MAX = 640;
+          let w = img.width;
+          let h = img.height;
+          if (w > h && w > MAX) {
+            h = Math.round(h * (MAX / w));
+            w = MAX;
+          } else if (h > MAX) {
+            w = Math.round(w * (MAX / h));
+            h = MAX;
+          }
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, w, h);
+            resolve(canvas.toDataURL('image/jpeg', 0.65));
+          } else {
+            resolve(dataUrl);
+          }
+        };
+        img.onerror = () => resolve(dataUrl);
+        img.src = dataUrl;
+      } catch {
+        resolve(dataUrl);
+      }
+    });
+  };
+
+  // Image compression & file handler for Surveyor (Max 640px, 0.65 quality -> ~35KB per photo)
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>, photoKey: 'station' | 'tallest' | string) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -189,17 +279,17 @@ export function StationSectorModal({
         const canvas = document.createElement('canvas');
         let width = img.width;
         let height = img.height;
-        const MAX_WIDTH = 1200;
-        const MAX_HEIGHT = 1200;
+        const MAX_WIDTH = 640;
+        const MAX_HEIGHT = 640;
 
         if (width > height) {
           if (width > MAX_WIDTH) {
-            height *= MAX_WIDTH / width;
+            height = Math.round(height * (MAX_WIDTH / width));
             width = MAX_WIDTH;
           }
         } else {
           if (height > MAX_HEIGHT) {
-            width *= MAX_HEIGHT / height;
+            width = Math.round(width * (MAX_HEIGHT / height));
             height = MAX_HEIGHT;
           }
         }
@@ -212,13 +302,14 @@ export function StationSectorModal({
 
           // Watermark date & station name
           ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
-          ctx.fillRect(10, height - 36, Math.min(width - 20, 380), 26);
-          ctx.font = 'bold 12px sans-serif';
+          ctx.fillRect(8, height - 30, Math.min(width - 16, 360), 22);
+          ctx.font = 'bold 11px sans-serif';
           ctx.fillStyle = '#ffffff';
           const stamp = `${station.name} (${station.infrastructureCode || 'CSHT'}) • ${new Date().toLocaleDateString('vi-VN')}`;
-          ctx.fillText(stamp, 18, height - 19);
+          ctx.fillText(stamp, 14, height - 15);
 
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+          // Compress to ~30-40KB
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.65);
 
           if (photoKey === 'station') {
             setSurveyPhotos(p => ({ ...p, stationPhotoUrl: dataUrl }));
@@ -248,26 +339,119 @@ export function StationSectorModal({
     reader.readAsDataURL(file);
   };
 
-  // Save full station survey data
+  // Save full station survey data with automated re-compression & automatic Google Drive upload
   const handleSave = async () => {
     setIsSaving(true);
     try {
       const isComplete = completionStatus.isComplete;
+
+      // Ensure any legacy uncompressed photos get shrunken under 100KB each
+      const optimizedPhotos = { ...surveyPhotos };
+      if (optimizedPhotos.stationPhotoUrl) {
+        optimizedPhotos.stationPhotoUrl = await shrinkBase64IfLarge(optimizedPhotos.stationPhotoUrl);
+      }
+      if (optimizedPhotos.tallestObstaclePhotoUrl) {
+        optimizedPhotos.tallestObstaclePhotoUrl = await shrinkBase64IfLarge(optimizedPhotos.tallestObstaclePhotoUrl);
+      }
+      if (optimizedPhotos.antennaPhotos && optimizedPhotos.antennaPhotos.length > 0) {
+        optimizedPhotos.antennaPhotos = await Promise.all(
+          optimizedPhotos.antennaPhotos.map(async (at) => ({
+            ...at,
+            url: at.url ? (await shrinkBase64IfLarge(at.url)) || '' : ''
+          }))
+        );
+      }
+
+      let finalDriveUrl = googleDriveFolderUrl.trim();
+      const currentToken = getGoogleDriveAccessToken() || driveConfig.accessToken;
+      const effectiveDriveConfig: GoogleDriveConfig = {
+        ...driveConfig,
+        accessToken: currentToken || undefined
+      };
+      const hasDriveSync = Boolean(currentToken || driveConfig.appsScriptUrl);
+
+      // Automatic Google Drive sync: saves files & standardized photos directly
+      if (hasDriveSync) {
+        setDriveUploadStatus('Đang tự động chuẩn hóa ảnh và tải lên Google Drive...');
+        try {
+          const targetCshtCode = (station.infrastructureCode || station.id.slice(0, 8)).replace(/[^a-zA-Z0-9_-]/g, '_');
+          const folderName = `${targetCshtCode}_${station.name.replace(/\s+/g, '_')}`;
+
+          const exportData = {
+            standard: "QCVN 08:2022/BTTTT",
+            station: {
+              id: station.id,
+              name: station.name,
+              infrastructureCode: station.infrastructureCode || '',
+              infrastructureDepartment: station.infrastructureDepartment || '',
+              latitude: station.latitude,
+              longitude: station.longitude,
+              address: station.address,
+              managerName: station.managerName,
+              managerPhone: station.managerPhone
+            },
+            surveyResults,
+            sectors,
+            ctcnList,
+            completionStatus,
+            exportedAt: new Date().toISOString()
+          };
+
+          const printableElement = document.getElementById('qcvn08-printable-doc');
+          const printableHtml = printableElement ? printableElement.outerHTML : '';
+
+          const res = await uploadDossierToGoogleDrive(effectiveDriveConfig, {
+            stationCode: targetCshtCode,
+            stationName: station.name,
+            folderName,
+            exportData,
+            printableHtml,
+            photos: optimizedPhotos
+          }, (status) => setDriveUploadStatus(status));
+
+          if (res.success && res.folderUrl) {
+            finalDriveUrl = res.folderUrl;
+            setGoogleDriveFolderUrl(res.folderUrl);
+            setDriveUploadResult({
+              success: true,
+              message: `Đã tự động tạo thư mục "${folderName}", chuẩn hóa tên ảnh và lưu lên Google Drive thành công!`,
+              url: res.folderUrl
+            });
+          }
+        } catch (driveErr: any) {
+          console.warn("Drive auto sync notice:", driveErr);
+          setDriveUploadResult({
+            success: false,
+            message: `Lỗi tải lên Google Drive: ${driveErr.message || 'Chưa thể tải'}. Dữ liệu trạm vẫn được lưu an toàn vào Database.`
+          });
+        } finally {
+          setDriveUploadStatus(null);
+        }
+      } else {
+        setDriveUploadResult({
+          success: false,
+          message: "Lưu ý: Chưa đăng nhập Google Drive (hồ sơ đã được lưu an toàn vào Database). Hãy bấm nút 'Đăng nhập Google Drive' để tự động đẩy ảnh và hồ sơ lên Drive!"
+        });
+      }
+
       const updatedStationData = {
         sectors,
         ctcnList,
         surveyResults,
-        googleDriveFolderUrl: googleDriveFolderUrl.trim(),
-        surveyPhotos,
+        googleDriveFolderUrl: finalDriveUrl,
+        surveyPhotos: optimizedPhotos,
         surveyStatus: (isComplete ? 'completed' : 'draft') as 'completed' | 'draft',
         status: (isComplete ? 'checked' : (station.status || 'unchecked')) as 'checked' | 'unchecked',
         updatedAt: new Date().toISOString()
       };
 
-      await updateDoc(doc(db, 'stations', station.id), updatedStationData);
+      await updateDoc(doc(db, 'stations', station.id), cleanFirestoreData(updatedStationData));
+
+      // Keep local state in sync with optimized photos
+      setSurveyPhotos(optimizedPhotos);
 
       setSaveSuccess(true);
-      setTimeout(() => setSaveSuccess(false), 3000);
+      setTimeout(() => setSaveSuccess(false), 3500);
       if (onSaved) {
         onSaved({
           ...station,
@@ -276,7 +460,7 @@ export function StationSectorModal({
       }
     } catch (err: any) {
       console.error("Failed to save station survey:", err);
-      alert("Lỗi khi lưu dữ liệu trạm: " + err.message);
+      alert("Lỗi khi lưu dữ liệu trạm: " + (err.message || 'Lỗi hệ thống. Vui lòng thử lại.'));
     } finally {
       setIsSaving(false);
     }
@@ -315,13 +499,206 @@ export function StationSectorModal({
     const link = document.createElement('a');
     const cshtCode = (station.infrastructureCode || station.name).replace(/[^a-zA-Z0-9_-]/g, '_');
     link.href = url;
-    link.download = `KhaoSat_${cshtCode}_${new Date().toISOString().substring(0, 10)}.json`;
+    link.download = `${cshtCode}_KhaoSat_QCVN08.json`;
     link.click();
     URL.revokeObjectURL(url);
   };
 
   const handlePrint = () => {
     window.print();
+  };
+
+  const getRootFolderUrl = () => {
+    if (driveConfig.rootFolderUrl && driveConfig.rootFolderUrl.startsWith('http')) {
+      return driveConfig.rootFolderUrl;
+    }
+    if (driveConfig.rootFolderId) {
+      return `https://drive.google.com/drive/folders/${driveConfig.rootFolderId}`;
+    }
+    return 'https://drive.google.com/drive/my-drive';
+  };
+
+  // Google Drive 1-Click OAuth sign-in
+  const handleGoogleDriveSignIn = async () => {
+    setIsSigningInGoogle(true);
+    try {
+      const res = await signInWithGoogleDrive();
+      setDriveUser(res.user);
+      setDriveUploadResult({
+        success: true,
+        message: `Đã kết nối tài khoản Google (${res.user.email})! Bây giờ khi bấm "Lưu vào Hồ sơ Trạm", ảnh và hồ sơ sẽ tự động lưu thẳng lên Google Drive.`
+      });
+    } catch (err: any) {
+      if (err.code !== 'auth/popup-closed-by-user') {
+        console.error("Sign-in error:", err);
+        setDriveUploadResult({
+          success: false,
+          message: `Lỗi kết nối Google Drive: ${err.message || 'Không thể đăng nhập'}`
+        });
+      }
+    } finally {
+      setIsSigningInGoogle(false);
+    }
+  };
+
+  const handleGoogleDriveSignOut = async () => {
+    await signOutGoogleDrive();
+    setDriveUser(null);
+    setDriveUploadResult({
+      success: false,
+      message: "Đã ngắt kết nối Google Drive."
+    });
+  };
+
+  // Manual offline download only when explicitly clicked by user
+  const handleDownloadOfflinePackage = () => {
+    const targetCshtCode = (station.infrastructureCode || station.id.slice(0, 8)).replace(/[^a-zA-Z0-9_-]/g, '_');
+    const folderName = `${targetCshtCode}_${station.name.replace(/\s+/g, '_')}`;
+
+    // 1. Download packaged JSON file with standardized name
+    handleExportJSON();
+
+    // 2. Download standardized photos so user can store them offline
+    const downloadDataUrlAsFile = (dataUrl: string, filename: string) => {
+      try {
+        const link = document.createElement('a');
+        link.href = dataUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      } catch (err) {
+        console.warn('Failed to download photo', filename, err);
+      }
+    };
+
+    if (surveyPhotos.stationPhotoUrl) {
+      setTimeout(() => downloadDataUrlAsFile(surveyPhotos.stationPhotoUrl!, `${targetCshtCode}_NhaTram.jpg`), 250);
+    }
+    if (surveyPhotos.tallestObstaclePhotoUrl) {
+      setTimeout(() => downloadDataUrlAsFile(surveyPhotos.tallestObstaclePhotoUrl!, `${targetCshtCode}_CTCN_CaoNhat.jpg`), 500);
+    }
+    if (surveyPhotos.antennaPhotos && surveyPhotos.antennaPhotos.length > 0) {
+      surveyPhotos.antennaPhotos.forEach((at, idx) => {
+        if (at.url) {
+          setTimeout(() => downloadDataUrlAsFile(at.url, `${targetCshtCode}_Anten_AT${idx + 1}.jpg`), 750 + idx * 250);
+        }
+      });
+    }
+
+    try {
+      navigator.clipboard.writeText(folderName);
+      setCopiedFolderName(true);
+      setTimeout(() => setCopiedFolderName(false), 2500);
+    } catch (e) {
+      console.warn("Clipboard copy error:", e);
+    }
+
+    setDriveUploadResult({
+      success: true,
+      message: `Đã tải toàn bộ hồ sơ JSON và các ảnh chụp chuẩn hóa tên (${targetCshtCode}_*.jpg) về máy tính để lưu trữ offline!`
+    });
+  };
+
+  // Quick save custom Google Drive folder URL to Firestore station document
+  const handleSaveDriveFolderUrl = async () => {
+    if (!googleDriveFolderUrl.trim()) return;
+    setIsSavingDriveUrl(true);
+    try {
+      await updateDoc(doc(db, 'stations', station.id), {
+        googleDriveFolderUrl: googleDriveFolderUrl.trim(),
+        updatedAt: new Date().toISOString()
+      });
+      alert("Đã lưu liên kết Google Drive của CSHT này thành công!");
+    } catch (e: any) {
+      console.error("Error saving drive link:", e);
+      alert("Lỗi khi lưu link Google Drive: " + e.message);
+    } finally {
+      setIsSavingDriveUrl(false);
+    }
+  };
+
+  // Upload Dossier to Google Drive (API or OAuth) - Never automatically downloads files
+  const handleUploadDossierToGoogleDrive = async () => {
+    const currentToken = getGoogleDriveAccessToken() || driveConfig.accessToken;
+
+    if (!currentToken && !driveConfig.appsScriptUrl) {
+      // Connect Google Drive directly
+      handleGoogleDriveSignIn();
+      return;
+    }
+
+    const targetCshtCode = (station.infrastructureCode || station.id.slice(0, 8)).replace(/[^a-zA-Z0-9_-]/g, '_');
+    const folderName = `${targetCshtCode}_${station.name.replace(/\s+/g, '_')}`;
+
+    setIsUploadingToDrive(true);
+    setDriveUploadStatus('Đang tạo thư mục và tải ảnh chuẩn hóa lên Google Drive...');
+    setDriveUploadResult(null);
+
+    try {
+      const exportData = {
+        standard: "QCVN 08:2022/BTTTT",
+        station: {
+          id: station.id,
+          name: station.name,
+          infrastructureCode: station.infrastructureCode || '',
+          infrastructureDepartment: station.infrastructureDepartment || '',
+          latitude: station.latitude,
+          longitude: station.longitude,
+          address: station.address,
+          managerName: station.managerName,
+          managerPhone: station.managerPhone
+        },
+        surveyResults,
+        sectors,
+        ctcnList,
+        completionStatus,
+        exportedAt: new Date().toISOString()
+      };
+
+      const printableElement = document.getElementById('qcvn08-printable-doc');
+      const printableHtml = printableElement ? printableElement.outerHTML : '';
+
+      const effectiveConfig: GoogleDriveConfig = {
+        ...driveConfig,
+        accessToken: currentToken || undefined
+      };
+
+      const res = await uploadDossierToGoogleDrive(effectiveConfig, {
+        stationCode: targetCshtCode,
+        stationName: station.name,
+        folderName,
+        exportData,
+        printableHtml,
+        photos: surveyPhotos
+      }, (status) => setDriveUploadStatus(status));
+
+      if (res.success && res.folderUrl) {
+        setGoogleDriveFolderUrl(res.folderUrl);
+        try {
+          await updateDoc(doc(db, 'stations', station.id), {
+            googleDriveFolderUrl: res.folderUrl,
+            updatedAt: new Date().toISOString()
+          });
+        } catch (e) {
+          console.warn("Could not auto-update station doc:", e);
+        }
+        setDriveUploadResult({
+          success: true,
+          message: `Đã tạo thư mục "${folderName}", chuẩn hóa tên ảnh và lưu lên Google Drive thành công!`,
+          url: res.folderUrl
+        });
+      }
+    } catch (err: any) {
+      console.error("Google Drive upload error:", err);
+      setDriveUploadResult({
+        success: false,
+        message: `Lỗi tải lên Google Drive: ${err.message || 'Chưa thể tải'}. Vui lòng thử lại hoặc đăng nhập lại Google.`
+      });
+    } finally {
+      setIsUploadingToDrive(false);
+      setDriveUploadStatus(null);
+    }
   };
 
   const suggestedDriveFolderName = `${station.infrastructureCode || 'CSHT'}_${station.name.replace(/\s+/g, '_')}`;
@@ -438,6 +815,29 @@ export function StationSectorModal({
             </div>
 
             <div className="hidden sm:flex items-center gap-2">
+              {driveUser ? (
+                <div className="flex items-center gap-1.5 text-xs text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                  <span className="font-semibold truncate max-w-[150px]">{driveUser.email}</span>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleGoogleDriveSignIn}
+                  disabled={isSigningInGoogle}
+                  className="text-xs text-slate-700 hover:text-blue-700 bg-white hover:bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200 font-semibold flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                  title="Đăng nhập Google để đồng bộ Drive"
+                >
+                  <svg className="w-3 h-3" viewBox="0 0 24 24">
+                    <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.8-2.4 3.66v3.05h3.87c2.27-2.09 3.67-5.17 3.67-9.15z"/>
+                    <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.87-3.05c-1.08.72-2.45 1.16-4.06 1.16-3.13 0-5.78-2.11-6.73-4.96H1.28v3.15C3.26 21.36 7.36 24 12 24z"/>
+                    <path fill="#FBBC05" d="M5.27 14.24c-.25-.72-.38-1.49-.38-2.24s.13-1.52.38-2.24V6.61H1.28C.46 8.23 0 10.06 0 12s.46 3.77 1.28 5.39l3.99-3.15z"/>
+                    <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.36 0 3.26 2.64 1.28 6.61l3.99 3.15c.95-2.85 3.6-4.96 6.73-4.96z"/>
+                  </svg>
+                  <span>{isSigningInGoogle ? "Đang kết nối..." : "Đăng nhập Drive"}</span>
+                </button>
+              )}
+
               {googleDriveFolderUrl && (
                 <a
                   href={googleDriveFolderUrl}
@@ -565,6 +965,8 @@ export function StationSectorModal({
                       </select>
                     </div>
 
+
+
                     <div>
                       <label className="font-semibold text-slate-700 block mb-1">Quang cảnh xung quanh trạm</label>
                       <select
@@ -593,7 +995,7 @@ export function StationSectorModal({
                       />
                     </div>
 
-                    {/* 3 Thông số Công trình cao nhất (Có thể tự điền hoặc bấm ⚡ lấy tự động) */}
+                    {/* 4 Thông số Công trình cao nhất (Có thể tự điền hoặc bấm ⚡ lấy tự động) */}
                     <div className="bg-blue-50/60 p-2.5 rounded-xl border border-blue-200/80">
                       <div className="flex items-center justify-between mb-1">
                         <label className="font-bold text-blue-900 block text-[11px]">Góc phương vị CTCN cao nhất (°)</label>
@@ -651,6 +1053,7 @@ export function StationSectorModal({
                       <label className="font-semibold text-slate-700 block mb-1">Độ cao nhà đặt cột (m)</label>
                       <Input
                         type="number"
+                        step="0.5"
                         placeholder="VD: 15m (nếu trên mái)"
                         value={surveyResults.buildingBaseHeight ?? ''}
                         onChange={(e: any) => setSurveyResults({ ...surveyResults, buildingBaseHeight: parseFloat(e.target.value) || 0 })}
@@ -744,11 +1147,11 @@ export function StationSectorModal({
                           <tr>
                             <th className="p-2.5 text-center w-10">STT</th>
                             <th className="p-2.5 text-left min-w-[140px]">Tên / Hướng quan sát</th>
-                            <th className="p-2.5 text-center w-28">Góc (° Bắc)</th>
-                            <th className="p-2.5 text-center w-28">Cự ly chân cột (m)</th>
-                            <th className="p-2.5 text-left min-w-[160px]">Loại công trình định nghĩa</th>
+                            <th className="p-2.5 text-center w-24">Góc (° Bắc)</th>
+                            <th className="p-2.5 text-center w-24">Cự ly chân cột (m)</th>
+                            <th className="p-2.5 text-left min-w-[140px]">Phân loại đối tượng</th>
+                            <th className="p-2.5 text-center w-28">Số tầng</th>
                             <th className="p-2.5 text-center w-24">Độ cao (m)</th>
-                            <th className="p-2.5 text-center w-20">Số tầng</th>
                             <th className="p-2.5 text-center w-12">Xóa</th>
                           </tr>
                         </thead>
@@ -797,64 +1200,106 @@ export function StationSectorModal({
                                 />
                               </td>
                               <td className="p-2">
-                                <select
-                                  value={item.buildingType || 'residential'}
-                                  onChange={e => {
-                                    const val = e.target.value as CtcnObstacle['buildingType'];
-                                    setCtcnList(prev => prev.map(c => c.id === item.id ? { ...c, buildingType: val } : c));
-                                  }}
-                                  className="w-full px-2 py-1 border border-slate-200 rounded-lg text-xs bg-white focus:border-blue-500 outline-none font-medium"
-                                >
-                                  {CTCN_BUILDING_TYPES.map(bt => (
-                                    <option key={bt.id} value={bt.id}>{bt.icon} {bt.label}</option>
-                                  ))}
-                                </select>
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className={cn(
+                                    "px-2 py-0.5 rounded-lg text-[10px] font-bold border",
+                                    item.surveyCategory === 'ctcn' || (!item.directionType && !item.surveyCategory)
+                                      ? "bg-blue-50 text-blue-700 border-blue-200"
+                                      : item.directionType === 'sector_main' || item.surveyCategory?.startsWith('sector_')
+                                      ? "bg-indigo-50 text-indigo-700 border-indigo-200"
+                                      : item.directionType === 'sector_inter' || item.surveyCategory?.startsWith('inter_')
+                                      ? "bg-purple-50 text-purple-700 border-purple-200"
+                                      : "bg-slate-100 text-slate-700 border-slate-200"
+                                  )}>
+                                    {item.categoryLabel || item.directionLabel || (item.surveyCategory === 'ctcn' ? '🏢 CTCN' : '📍 Vị trí')}
+                                  </span>
+                                  {item.affectedSectorName && (
+                                    <span className="text-[10px] text-slate-500 font-medium">{item.affectedSectorName}</span>
+                                  )}
+                                </div>
                                 {item.buildingType === 'other' && (
                                   <input
                                     type="text"
-                                    placeholder="Điền tên / loại công trình khác..."
+                                    placeholder="Ghi chú loại công trình..."
                                     value={item.notes || ''}
                                     onChange={e => {
                                       const val = e.target.value;
                                       setCtcnList(prev => prev.map(c => c.id === item.id ? { ...c, notes: val } : c));
                                     }}
-                                    className="mt-1 w-full px-2 py-1 border border-amber-300 rounded-md text-[11px] bg-amber-50/60 focus:bg-white outline-none"
+                                    className="mt-1 w-full px-2 py-0.5 border border-amber-300 rounded text-[11px] bg-amber-50/50 outline-none"
                                   />
                                 )}
                               </td>
                               <td className="p-2 text-center">
-                                <input
-                                  type="number"
-                                  min={1}
-                                  max={150}
-                                  value={item.heightMeters || ''}
-                                  onChange={e => {
-                                    const val = parseFloat(e.target.value) || 0;
-                                    setCtcnList(prev => prev.map(c => c.id === item.id ? { ...c, heightMeters: val } : c));
-                                  }}
-                                  placeholder="Cao (m)"
-                                  className="w-16 px-1.5 py-1 text-center font-mono border border-slate-200 rounded-lg text-xs"
-                                />
+                                <div className="flex items-center justify-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const next = Math.max(1, (item.floors || 1) - 1);
+                                      setCtcnList(prev => prev.map(c => c.id === item.id ? { 
+                                        ...c, 
+                                        floors: next,
+                                        heightMeters: c.heightMeters || Math.round(next * 3.5 * 10) / 10
+                                      } : c));
+                                    }}
+                                    className="w-5 h-5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs flex items-center justify-center border border-slate-200 cursor-pointer"
+                                  >
+                                    -
+                                  </button>
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    max={60}
+                                    value={item.floors || 1}
+                                    onChange={e => {
+                                      const val = Math.max(1, parseInt(e.target.value) || 1);
+                                      setCtcnList(prev => prev.map(c => c.id === item.id ? { 
+                                        ...c, 
+                                        floors: val,
+                                        heightMeters: c.heightMeters || Math.round(val * 3.5 * 10) / 10
+                                      } : c));
+                                    }}
+                                    className="w-12 px-1 py-1 text-center font-bold border border-slate-200 rounded-lg text-xs bg-white"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const next = (item.floors || 1) + 1;
+                                      setCtcnList(prev => prev.map(c => c.id === item.id ? { 
+                                        ...c, 
+                                        floors: next,
+                                        heightMeters: c.heightMeters || Math.round(next * 3.5 * 10) / 10
+                                      } : c));
+                                    }}
+                                    className="w-5 h-5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs flex items-center justify-center border border-slate-200 cursor-pointer"
+                                  >
+                                    +
+                                  </button>
+                                </div>
                               </td>
                               <td className="p-2 text-center">
-                                <input
-                                  type="number"
-                                  min={1}
-                                  max={50}
-                                  value={item.floors || ''}
-                                  onChange={e => {
-                                    const val = parseInt(e.target.value) || 1;
-                                    setCtcnList(prev => prev.map(c => c.id === item.id ? { ...c, floors: val } : c));
-                                  }}
-                                  placeholder="Tầng"
-                                  className="w-12 px-1 text-center font-mono border border-slate-200 rounded-lg text-xs"
-                                />
+                                <div className="flex items-center justify-center gap-1">
+                                  <input
+                                    type="number"
+                                    step="0.5"
+                                    min={0.5}
+                                    max={150}
+                                    value={item.heightMeters || ''}
+                                    placeholder={item.floors ? `${Math.round(item.floors * 3.5)}m` : '10m'}
+                                    onChange={e => {
+                                      const val = parseFloat(e.target.value) || 0;
+                                      setCtcnList(prev => prev.map(c => c.id === item.id ? { ...c, heightMeters: val } : c));
+                                    }}
+                                    className="w-16 px-1.5 py-1 text-center font-mono font-bold text-slate-800 border border-slate-200 rounded-lg text-xs bg-white"
+                                  />
+                                  <span className="text-[10px] text-slate-400 font-semibold">m</span>
+                                </div>
                               </td>
                               <td className="p-2 text-center">
                                 <button
                                   type="button"
                                   onClick={() => setCtcnList(prev => prev.filter(c => c.id !== item.id))}
-                                  className="p-1 text-slate-400 hover:text-red-600 rounded"
+                                  className="p-1 text-slate-400 hover:text-red-600 rounded cursor-pointer"
                                   title="Xóa điểm này"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
@@ -1063,11 +1508,11 @@ export function StationSectorModal({
                     </div>
                   </div>
 
-                  {/* Google Drive Folder Box */}
+                  {/* Google Drive Folder & Dossier Manager Box */}
                   <div className="pt-2 border-t border-slate-100">
-                    <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 space-y-2">
+                    <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-3">
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                        <div className="flex items-center gap-1.5 flex-wrap">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <label className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
                             <FolderOpen className="w-4 h-4 text-blue-600" />
                             Thư mục Google Drive theo CSHT:
@@ -1078,48 +1523,228 @@ export function StationSectorModal({
                           <button
                             type="button"
                             onClick={() => {
-                              navigator.clipboard.writeText(suggestedDriveFolderName);
-                              alert(`Đã sao chép tên thư mục: "${suggestedDriveFolderName}"! Hãy tạo hoặc tìm thư mục này trên Google Drive.`);
+                              try {
+                                navigator.clipboard.writeText(suggestedDriveFolderName);
+                                setCopiedFolderName(true);
+                                setTimeout(() => setCopiedFolderName(false), 2000);
+                              } catch (e) {
+                                console.warn(e);
+                              }
                             }}
-                            className="text-[11px] text-blue-700 bg-white hover:bg-blue-100 border border-blue-200 px-2 py-0.5 rounded font-semibold transition-colors cursor-pointer"
-                            title="Sao chép tên thư mục"
+                            className={cn(
+                              "text-[11px] px-2.5 py-0.5 rounded font-semibold transition-all cursor-pointer border flex items-center gap-1",
+                              copiedFolderName 
+                                ? "bg-emerald-50 text-emerald-700 border-emerald-300 font-bold" 
+                                : "text-blue-700 bg-white hover:bg-blue-50 border-blue-200"
+                            )}
+                            title="Sao chép tên thư mục tương ứng với mã CSHT"
                           >
-                            Sao chép tên
+                            {copiedFolderName ? (
+                              <>
+                                <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                                <span>Đã sao chép!</span>
+                              </>
+                            ) : (
+                              <span>Sao chép tên CSHT</span>
+                            )}
                           </button>
                         </div>
-                        {googleDriveFolderUrl && (
-                          <a
-                            href={googleDriveFolderUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-xs text-blue-600 hover:underline flex items-center gap-1 font-semibold"
+
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <button
+                            type="button"
+                            onClick={() => setShowDriveConfigModal(true)}
+                            className="text-xs text-slate-700 hover:text-blue-700 bg-white hover:bg-blue-50 border border-slate-200 hover:border-blue-300 px-2.5 py-1 rounded-lg font-semibold flex items-center gap-1 transition-all shadow-2xs cursor-pointer"
+                            title="Cấu hình thư mục gốc Google Drive dùng chung"
                           >
-                            <span>Truy cập Drive CSHT</span>
-                            <ExternalLink className="w-3 h-3" />
-                          </a>
-                        )}
+                            <Settings className="w-3.5 h-3.5 text-slate-500" />
+                            <span>Cấu hình Thư mục gốc</span>
+                          </button>
+
+                          {googleDriveFolderUrl && (
+                            <a
+                              href={googleDriveFolderUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-xs text-blue-600 hover:underline flex items-center gap-1 font-semibold"
+                            >
+                              <span>Mở Drive CSHT</span>
+                              <ExternalLink className="w-3 h-3" />
+                            </a>
+                          )}
+                        </div>
                       </div>
 
-                      <div className="flex gap-2">
-                        <Input
-                          type="url"
-                          placeholder="Dán link thư mục Google Drive của trạm này (VD: https://drive.google.com/drive/folders/...)"
-                          value={googleDriveFolderUrl}
-                          onChange={(e: any) => setGoogleDriveFolderUrl(e.target.value)}
-                          className="text-xs h-9 bg-white"
-                        />
-                        {googleDriveFolderUrl && (
+                      {/* Root Folder & Dual Action Launcher */}
+                      <div className="p-3.5 bg-white rounded-xl border border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-2xs">
+                        <div className="min-w-0 space-y-1">
+                          <div className="text-xs text-slate-700 font-medium flex items-center gap-1.5 flex-wrap">
+                            <span className="text-slate-500 font-semibold">Thư mục gốc lưu trữ:</span>
+                            {driveConfig.rootFolderUrl ? (
+                              <a
+                                href={getRootFolderUrl()}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="font-mono text-blue-700 font-bold truncate max-w-[260px] sm:max-w-sm hover:underline flex items-center gap-1"
+                                title="Bấm để mở Thư mục gốc trên Google Drive"
+                              >
+                                <span>{driveConfig.rootFolderUrl}</span>
+                                <ExternalLink className="w-3 h-3 shrink-0" />
+                              </a>
+                            ) : (
+                              <span className="text-amber-600 font-semibold italic">
+                                Chưa cấu hình (Bấm "Cấu hình Thư mục gốc" để cài đặt)
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-slate-500">
+                            Quy chuẩn: Mỗi CSHT sẽ có một thư mục riêng đặt tên theo mã trạm: <strong>{suggestedDriveFolderName}</strong>.
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-2 flex-wrap shrink-0">
+                          {driveUser ? (
+                            <div className="flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-800 rounded-lg border border-emerald-200 text-xs font-semibold">
+                              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                              <span className="truncate max-w-[150px] sm:max-w-[200px]" title={driveUser.email || 'Đã kết nối'}>
+                                {driveUser.email}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={handleGoogleDriveSignOut}
+                                className="text-[10px] text-slate-400 hover:text-red-600 underline ml-1 cursor-pointer font-normal"
+                                title="Đăng xuất tài khoản Google Drive"
+                              >
+                                Thoát
+                              </button>
+                            </div>
+                          ) : (
+                            <Button
+                              type="button"
+                              size="sm"
+                              disabled={isSigningInGoogle}
+                              onClick={handleGoogleDriveSignIn}
+                              className="h-8 text-xs bg-white hover:bg-slate-50 text-slate-800 font-bold border border-slate-300 shadow-2xs flex items-center gap-2 cursor-pointer transition-all"
+                              title="Đăng nhập Google để lưu trực tiếp vào Drive"
+                            >
+                              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24">
+                                <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.8-2.4 3.66v3.05h3.87c2.27-2.09 3.67-5.17 3.67-9.15z"/>
+                                <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.87-3.05c-1.08.72-2.45 1.16-4.06 1.16-3.13 0-5.78-2.11-6.73-4.96H1.28v3.15C3.26 21.36 7.36 24 12 24z"/>
+                                <path fill="#FBBC05" d="M5.27 14.24c-.25-.72-.38-1.49-.38-2.24s.13-1.52.38-2.24V6.61H1.28C.46 8.23 0 10.06 0 12s.46 3.77 1.28 5.39l3.99-3.15z"/>
+                                <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.36 0 3.26 2.64 1.28 6.61l3.99 3.15c.95-2.85 3.6-4.96 6.73-4.96z"/>
+                              </svg>
+                              <span>{isSigningInGoogle ? "Đang kết nối..." : "Đăng nhập Google Drive"}</span>
+                            </Button>
+                          )}
+
+                          {/* Automated upload button */}
                           <Button
                             type="button"
                             size="sm"
-                            variant="secondary"
-                            onClick={() => window.open(googleDriveFolderUrl, '_blank')}
-                            className="h-9 text-xs shrink-0 flex items-center gap-1"
+                            disabled={isUploadingToDrive}
+                            onClick={handleUploadDossierToGoogleDrive}
+                            className="h-8 text-xs bg-blue-600 hover:bg-blue-700 text-white font-bold flex items-center gap-1.5 shadow-xs cursor-pointer"
+                            title="Tải toàn bộ ảnh chuẩn hóa và hồ sơ lên Google Drive"
                           >
-                            <ExternalLink className="w-3.5 h-3.5" />
-                            <span>Mở</span>
+                            {isUploadingToDrive ? (
+                              <>
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
+                                <span>{driveUploadStatus || 'Đang tải lên...'}</span>
+                              </>
+                            ) : (
+                              <>
+                                <CloudUpload className="w-3.5 h-3.5" />
+                                <span>Đẩy lên Google Drive</span>
+                              </>
+                            )}
                           </Button>
-                        )}
+
+                          {/* Subtle offline backup option */}
+                          <button
+                            type="button"
+                            onClick={handleDownloadOfflinePackage}
+                            className="text-[11px] text-slate-500 hover:text-slate-800 flex items-center gap-1 font-medium hover:underline cursor-pointer ml-1"
+                            title="Tải bộ hồ sơ và ảnh về máy tính để sao lưu offline"
+                          >
+                            <Download className="w-3 h-3 text-slate-400" />
+                            <span>Sao lưu về máy</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Status / Success notification */}
+                      {driveUploadResult && (
+                        <div className={cn(
+                          "p-3 rounded-xl text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2.5",
+                          driveUploadResult.success 
+                            ? "bg-emerald-50 text-emerald-900 border border-emerald-200" 
+                            : "bg-amber-50 text-amber-900 border border-amber-200"
+                        )}>
+                          <div className="flex items-start gap-2">
+                            {driveUploadResult.success ? (
+                              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                            ) : (
+                              <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                            )}
+                            <div className="space-y-0.5">
+                              <p className="font-medium leading-relaxed">{driveUploadResult.message}</p>
+                              {driveUploadResult.url && (
+                                <p className="text-[11px] text-emerald-700">
+                                  Thư mục Drive: <code className="font-mono">{suggestedDriveFolderName}</code>
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                          {driveUploadResult.url && (
+                            <a
+                              href={driveUploadResult.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-3 py-1.5 rounded-lg shrink-0 flex items-center gap-1.5 shadow-2xs self-start sm:self-auto cursor-pointer"
+                            >
+                              <span>👉 Mở Google Drive ngay</span>
+                              <ExternalLink className="w-3.5 h-3.5" />
+                            </a>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Manual Drive Folder URL Link Editor & Saver */}
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-semibold text-slate-600 block">
+                          Đường dẫn thư mục Google Drive của CSHT này (dán link thư mục sau khi tạo trên Drive):
+                        </label>
+                        <div className="flex gap-2">
+                          <Input
+                            type="url"
+                            placeholder="Dán link thư mục Drive CSHT (VD: https://drive.google.com/drive/folders/...)"
+                            value={googleDriveFolderUrl}
+                            onChange={(e: any) => setGoogleDriveFolderUrl(e.target.value)}
+                            className="text-xs h-9 bg-white"
+                          />
+                          <Button
+                            type="button"
+                            size="sm"
+                            disabled={isSavingDriveUrl || !googleDriveFolderUrl.trim()}
+                            onClick={handleSaveDriveFolderUrl}
+                            className="h-9 text-xs px-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold shrink-0 cursor-pointer"
+                            title="Lưu link thư mục này vào dữ liệu trạm"
+                          >
+                            <Save className="w-3.5 h-3.5 mr-1" />
+                            <span>{isSavingDriveUrl ? 'Đang lưu...' : 'Lưu liên kết'}</span>
+                          </Button>
+                          {googleDriveFolderUrl && (
+                            <a
+                              href={googleDriveFolderUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="h-9 text-xs px-3 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-lg border border-slate-300 font-semibold shrink-0 flex items-center gap-1"
+                            >
+                              <ExternalLink className="w-3.5 h-3.5" />
+                              <span>Mở</span>
+                            </a>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1134,7 +1759,7 @@ export function StationSectorModal({
                 <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs flex flex-wrap items-center justify-between gap-3 print:hidden">
                   <div>
                     <h4 className="font-bold text-sm text-slate-900">Xuất Biên bản & Tệp tin Khảo sát</h4>
-                    <p className="text-xs text-slate-500">In trực tiếp Biên bản phụ lục QCVN 08 hoặc tải tệp JSON lưu trữ.</p>
+                    <p className="text-xs text-slate-500">In trực tiếp Biên bản phụ lục QCVN 08, tải tệp JSON hoặc lưu lên Google Drive CSHT.</p>
                   </div>
 
                   <div className="flex items-center gap-2 flex-wrap">
@@ -1156,7 +1781,51 @@ export function StationSectorModal({
                       className="h-8 text-xs border-slate-300 text-slate-700 hover:bg-slate-100 font-semibold flex items-center gap-1.5"
                     >
                       <Download className="w-3.5 h-3.5 text-blue-600" />
-                      <span>Tải file JSON khảo sát</span>
+                      <span>Tải file JSON</span>
+                    </Button>
+
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={handleDownloadOfflinePackage}
+                      className="h-8 text-xs border-slate-300 text-slate-700 hover:bg-slate-100 font-semibold flex items-center gap-1.5 cursor-pointer"
+                      title="Tải toàn bộ file JSON và ảnh chuẩn hóa về máy để sao lưu offline"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Sao lưu về máy (Offline)</span>
+                    </Button>
+
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={isUploadingToDrive}
+                      onClick={handleUploadDossierToGoogleDrive}
+                      className="h-8 text-xs bg-blue-600 hover:bg-blue-700 text-white font-semibold flex items-center gap-1.5 cursor-pointer"
+                    >
+                      {isUploadingToDrive ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Đang tải lên Drive...</span>
+                        </>
+                      ) : (
+                        <>
+                          <CloudUpload className="w-3.5 h-3.5" />
+                          <span>Lưu lên Drive CSHT</span>
+                        </>
+                      )}
+                    </Button>
+
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setShowDriveConfigModal(true)}
+                      className="h-8 text-xs border-slate-200 text-slate-600 hover:bg-slate-50 flex items-center gap-1"
+                      title="Cấu hình thư mục gốc Google Drive"
+                    >
+                      <Settings className="w-3.5 h-3.5 text-slate-500" />
+                      <span className="hidden sm:inline">Cấu hình Drive</span>
                     </Button>
 
                     {googleDriveFolderUrl && (
@@ -1168,14 +1837,14 @@ export function StationSectorModal({
                         className="h-8 text-xs bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 flex items-center gap-1.5"
                       >
                         <FolderOpen className="w-3.5 h-3.5 text-blue-600" />
-                        <span>Mở Thư mục Drive CSHT</span>
+                        <span>Mở Drive CSHT</span>
                       </Button>
                     )}
                   </div>
                 </div>
 
                 {/* Printable QCVN 08 Document */}
-                <div className="bg-white p-6 sm:p-8 rounded-2xl border border-slate-200 space-y-6 print:border-none print:p-0 print:m-0 text-slate-900 shadow-sm">
+                <div id="qcvn08-printable-doc" className="bg-white p-6 sm:p-8 rounded-2xl border border-slate-200 space-y-6 print:border-none print:p-0 print:m-0 text-slate-900 shadow-sm">
                   {/* Header Quốc hiệu */}
                   <div className="text-center border-b border-slate-200 pb-4 space-y-1">
                     <div className="text-xs font-bold uppercase tracking-wider">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>
@@ -1219,8 +1888,20 @@ export function StationSectorModal({
                         <strong className="text-slate-900">{surveyResults.towerLocation || 'Chưa xác định'}</strong>
                       </div>
                       <div>
+                        <span className="text-slate-500 font-semibold block">Độ cao nhà đặt cột:</span>
+                        <strong className="text-slate-900">{surveyResults.buildingBaseHeight ? `${surveyResults.buildingBaseHeight}m` : '0m (Mặt đất)'}</strong>
+                      </div>
+                      <div>
                         <span className="text-slate-500 font-semibold block">Độ cao cột anten:</span>
                         <strong className="text-slate-900">{surveyResults.antennaTowerHeight ? `${surveyResults.antennaTowerHeight}m` : 'N/A'}</strong>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 font-semibold block">CTCN cao nhất:</span>
+                        <strong className="text-slate-900">
+                          {surveyResults.tallestName 
+                            ? `${surveyResults.tallestName} (Cao ${surveyResults.tallestHeight || 0}m)` 
+                            : (surveyResults.tallestHeight ? `Cao ${surveyResults.tallestHeight}m` : 'N/A')}
+                        </strong>
                       </div>
                       <div>
                         <span className="text-slate-500 font-semibold block">Quang cảnh xung quanh:</span>
@@ -1277,6 +1958,7 @@ export function StationSectorModal({
                             <th className="p-2 border border-slate-200 text-center">Góc Bắc (°)</th>
                             <th className="p-2 border border-slate-200 text-left">Sector ảnh hưởng</th>
                             <th className="p-2 border border-slate-200 text-center">Độ lệch góc</th>
+                            <th className="p-2 border border-slate-200 text-center">Số tầng</th>
                             <th className="p-2 border border-slate-200 text-center">Độ cao (m)</th>
                             <th className="p-2 border border-slate-200 text-center">Ưu tiên đo QCVN 08</th>
                           </tr>
@@ -1290,7 +1972,8 @@ export function StationSectorModal({
                               <td className="p-2 border border-slate-200 text-center font-bold">{c.azimuth}°</td>
                               <td className="p-2 border border-slate-200">{c.affectedSectorName || 'Sector'}</td>
                               <td className="p-2 border border-slate-200 text-center">{c.offsetAngle > 0 ? `+${c.offsetAngle}°` : `${c.offsetAngle}°`}</td>
-                              <td className="p-2 border border-slate-200 text-center">{c.heightMeters ? `${c.heightMeters}m` : 'N/A'}</td>
+                              <td className="p-2 border border-slate-200 text-center font-medium">{c.floors ? `${c.floors} tầng` : '1 tầng'}</td>
+                              <td className="p-2 border border-slate-200 text-center font-bold">{c.heightMeters ? `${c.heightMeters}m` : 'N/A'}</td>
                               <td className="p-2 border border-slate-200 text-center">
                                 <span className={cn(
                                   "px-2 py-0.5 rounded text-[10px] font-bold",
@@ -1406,6 +2089,186 @@ export function StationSectorModal({
             </div>
           </div>
         </motion.div>
+
+        {/* Google Drive Root Folder Configuration Modal */}
+        {showDriveConfigModal && (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+            <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-lg p-5 space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center border border-blue-100 shadow-2xs">
+                    <FolderOpen className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-sm text-slate-900">Cấu hình Thư mục gốc Google Drive</h3>
+                    <p className="text-[11px] text-slate-500">Thư mục gốc lưu trữ hồ sơ cho tất cả các CSHT</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowDriveConfigModal(false)}
+                  className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="space-y-3.5 text-xs">
+                <div>
+                  <label className="font-bold text-slate-800 block mb-1">
+                    Đường dẫn (Link) hoặc ID Thư mục gốc Google Drive <span className="text-red-500">*</span>
+                  </label>
+                  <Input
+                    type="text"
+                    placeholder="VD: https://drive.google.com/drive/folders/1wXyZaBcDeFg..."
+                    value={driveConfig.rootFolderUrl}
+                    onChange={(e: any) => setDriveConfig({
+                      ...driveConfig,
+                      rootFolderUrl: e.target.value,
+                      rootFolderId: extractGoogleDriveFolderId(e.target.value)
+                    })}
+                    className="text-xs h-9 bg-slate-50 font-mono"
+                  />
+                  <p className="text-[11px] text-slate-500 mt-1.5 leading-relaxed">
+                    💡 <strong>Cách lấy link:</strong> Mở Google Drive &gt; Tạo thư mục (VD: <code className="bg-slate-100 px-1 py-0.5 rounded text-blue-700">HoSo_KhaoSat_BTS</code>) &gt; Bấm nút <strong>Chia sẻ</strong> &gt; Sao chép đường liên kết và dán vào đây.
+                  </p>
+                </div>
+
+                {driveConfig.rootFolderId && (
+                  <div className="p-2.5 bg-blue-50/70 rounded-xl border border-blue-200 text-[11px] flex items-center justify-between">
+                    <span className="text-blue-900 font-mono truncate mr-2">
+                      ID Thư mục gốc: <strong>{driveConfig.rootFolderId}</strong>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => window.open(driveConfig.rootFolderUrl.startsWith('http') ? driveConfig.rootFolderUrl : `https://drive.google.com/drive/folders/${driveConfig.rootFolderId}`, '_blank')}
+                      className="text-blue-700 hover:underline flex items-center gap-1 font-bold shrink-0"
+                    >
+                      <span>Mở kiểm tra</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </button>
+                  </div>
+                )}
+
+                <div className="pt-2 border-t border-slate-100">
+                  <label className="font-bold text-slate-800 block mb-1">
+                    Mã Google Drive API Access Token (Tùy chọn - để upload tự động ngầm)
+                  </label>
+                  <Input
+                    type="password"
+                    placeholder="Dán OAuth Access Token (nếu có để tự động tạo & upload ngầm)"
+                    value={driveConfig.accessToken || ''}
+                    onChange={(e: any) => setDriveConfig({ ...driveConfig, accessToken: e.target.value })}
+                    className="text-xs h-9 bg-slate-50"
+                  />
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    Nếu không có token, hệ thống sẽ mở Thư mục gốc trên Google Drive và tải file hồ sơ xuống để bạn kéo thả vào cực kỳ nhanh chóng.
+                  </p>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="font-bold text-slate-800 block">
+                      URL Google Apps Script Web App (Tự động tải lên & chuẩn hóa tên ảnh)
+                    </label>
+                    <button
+                      type="button"
+                      disabled={isTestingAppsScript || !driveConfig.appsScriptUrl}
+                      onClick={async () => {
+                        if (!driveConfig.appsScriptUrl) return;
+                        setIsTestingAppsScript(true);
+                        setAppsScriptTestResult(null);
+                        const res = await testGoogleAppsScript(driveConfig.appsScriptUrl);
+                        setIsTestingAppsScript(false);
+                        setAppsScriptTestResult(res);
+                      }}
+                      className="text-[11px] font-bold text-blue-700 hover:text-blue-900 flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                    >
+                      {isTestingAppsScript ? (
+                        <>
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                          <span>Đang kiểm tra...</span>
+                        </>
+                      ) : (
+                        <span>Kiểm tra kết nối</span>
+                      )}
+                    </button>
+                  </div>
+                  <Input
+                    type="url"
+                    placeholder="VD: https://script.google.com/macros/s/.../exec"
+                    value={driveConfig.appsScriptUrl || ''}
+                    onChange={(e: any) => {
+                      setDriveConfig({ ...driveConfig, appsScriptUrl: e.target.value });
+                      setAppsScriptTestResult(null);
+                    }}
+                    className="text-xs h-9 bg-slate-50 font-mono"
+                  />
+                  {appsScriptTestResult && (
+                    <div className={cn(
+                      "mt-1.5 p-2 rounded-lg text-[11px] flex items-center gap-1.5",
+                      appsScriptTestResult.success ? "bg-emerald-50 text-emerald-800 border border-emerald-200" : "bg-red-50 text-red-800 border border-red-200"
+                    )}>
+                      {appsScriptTestResult.success ? (
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                      ) : (
+                        <AlertCircle className="w-3.5 h-3.5 text-red-600 shrink-0" />
+                      )}
+                      <span>{appsScriptTestResult.message}</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Apps Script 1-Minute Setup Guide */}
+                <div className="p-3 bg-blue-50/70 rounded-xl border border-blue-200 text-xs space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-blue-950 flex items-center gap-1.5">
+                      <span>⚡ Mã Google Apps Script tự động tải ảnh & hồ sơ:</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(GOOGLE_APPS_SCRIPT_SAMPLE_CODE);
+                        alert("Đã sao chép mã Apps Script! Hãy mở script.google.com > Dán mã > Triển khai làm Web App (Quyền: Bất kỳ ai) và dán URL vào ô trên.");
+                      }}
+                      className="text-[11px] font-bold text-blue-700 bg-white hover:bg-blue-100 border border-blue-300 px-2.5 py-1 rounded-lg cursor-pointer shadow-2xs"
+                    >
+                      Sao chép mã Apps Script
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-blue-800 leading-relaxed">
+                    💡 <strong>Cài đặt trong 1 phút:</strong> Vào <a href="https://script.google.com" target="_blank" rel="noopener noreferrer" className="underline font-bold">script.google.com</a> &gt; Tạo dự án mới &gt; Dán đoạn mã đã sao chép &gt; Bấm <strong>Triển khai (Deploy)</strong> &gt; Chọn <strong>Tùy chọn triển khai mới &gt; Ứng dụng web</strong> (Thiết lập <i>Ai có quyền truy cập: Bất kỳ ai</i>) &gt; Sao chép URL dán vào ô trên. Khi bấm <strong>Lưu</strong>, toàn bộ ảnh chuẩn hóa <code className="font-mono bg-blue-100 px-1 rounded">[MãCSHT]_[LoạiẢnh].jpg</code> và hồ sơ JSON sẽ tự động đẩy lên Drive!
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowDriveConfigModal(false)}
+                  className="text-xs"
+                >
+                  Đóng
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => {
+                    saveGoogleDriveConfig(driveConfig);
+                    setShowDriveConfigModal(false);
+                    alert("Đã lưu cấu hình Thư mục gốc Google Drive thành công! Các hồ sơ CSHT sẽ được lưu vào đây.");
+                  }}
+                  className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>Lưu cấu hình</span>
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </AnimatePresence>
   );
